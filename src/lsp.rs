@@ -11,6 +11,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use reedline::{CompletionResult, Completer, Span, Suggestion};
 use serde_json::{json, Value};
 
+use crate::ide::Ide;
+
 const DOC_URI: &str = "untitled:betterr-console";
 const TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -252,21 +254,34 @@ fn snippet_to_cursor(snippet: &str) -> String {
     out
 }
 
+/// Where console completions come from: our own LSP connection to ark when
+/// standalone, or the IDE's language client when hosted (so the kernel keeps a
+/// single LSP client, which ark expects).
+pub enum CompletionBackend {
+    Lsp(Arc<Mutex<LspClient>>),
+    Ide(Arc<Ide>),
+    None,
+}
+
 pub struct LspCompleter {
-    pub lsp: Option<Arc<Mutex<LspClient>>>,
+    pub backend: CompletionBackend,
 }
 
 impl Completer for LspCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
-        let Some(lsp) = &self.lsp else {
-            return CompletionResult::fresh(Vec::new());
-        };
-        let Ok(mut lsp) = lsp.lock() else {
-            return CompletionResult::fresh(Vec::new());
-        };
-        let suggestions = match lsp.completions(line, pos) {
-            Ok(items) => to_suggestions(line, pos, &items, lsp.utf8_positions()),
-            Err(_) => Vec::new(),
+        let suggestions = match &self.backend {
+            CompletionBackend::Lsp(lsp) => match lsp.lock() {
+                Ok(mut lsp) => match lsp.completions(line, pos) {
+                    Ok(items) => to_suggestions(line, pos, &items, lsp.utf8_positions()),
+                    Err(_) => Vec::new(),
+                },
+                Err(_) => Vec::new(),
+            },
+            CompletionBackend::Ide(ide) => match ide.complete(line, pos) {
+                Ok(items) => to_suggestions(line, pos, &items, false),
+                Err(_) => Vec::new(),
+            },
+            CompletionBackend::None => Vec::new(),
         };
         CompletionResult::fresh(suggestions)
     }

@@ -290,14 +290,14 @@ impl KernelClient {
         Ok(comm_id)
     }
 
-    /// Opens a server comm (`lsp`, `ark_dap`) and returns the TCP port ark
-    /// reports in `server_started`. Other IOPub traffic goes to `on_other`.
+    /// Opens a server comm (`lsp`, `ark_dap`) and returns its comm id and the
+    /// TCP port ark reports in `server_started`. Other IOPub traffic goes to `on_other`.
     pub fn start_server_comm(
         &self,
         target: &str,
         timeout: Duration,
         mut on_other: impl FnMut(&Message),
-    ) -> Result<u16> {
+    ) -> Result<(String, u16)> {
         let comm_id = self.open_comm(target, json!({ "ip_address": "127.0.0.1" }))?;
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -309,7 +309,7 @@ impl KernelClient {
                 if data["method"] == "server_started"
                     && let Some(port) = data["params"]["port"].as_u64()
                 {
-                    return Ok(port as u16);
+                    return Ok((comm_id, port as u16));
                 }
             } else {
                 on_other(&msg);

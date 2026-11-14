@@ -2,6 +2,7 @@
 //! Jupyter, with tree-sitter highlighting and LSP-backed completion.
 
 mod highlight;
+mod ide;
 mod jupyter;
 mod kernel;
 mod lsp;
@@ -30,6 +31,7 @@ OPTIONS:
         --log <PATH>              Write the launched kernel's log here
         --no-lsp                  Disable LSP-backed completion
         --lsp-stdio               Bridge ark's LSP to stdin/stdout for an editor (needs -f)
+        --ide-socket <PATH>       Connect to a host IDE (Run Selection, debugger, completion)
     -h, --help                    Show this help
     -V, --version                 Show version
 
@@ -41,6 +43,7 @@ struct Args {
     log: Option<PathBuf>,
     lsp: bool,
     lsp_stdio: bool,
+    ide_socket: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Option<Args>> {
@@ -50,6 +53,7 @@ fn parse_args() -> Result<Option<Args>> {
         log: None,
         lsp: true,
         lsp_stdio: false,
+        ide_socket: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -60,6 +64,7 @@ fn parse_args() -> Result<Option<Args>> {
             "--log" => args.log = Some(value(&arg)?.into()),
             "--no-lsp" => args.lsp = false,
             "--lsp-stdio" => args.lsp_stdio = true,
+            "--ide-socket" => args.ide_socket = Some(value(&arg)?.into()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(None);
@@ -112,7 +117,7 @@ fn run() -> Result<i32> {
         },
     };
     let client = KernelClient::connect(&info)?;
-    let mut repl = Repl::start(client, origin, args.lsp, interrupted)?;
+    let mut repl = Repl::start(client, origin, args.lsp, interrupted, args.ide_socket.as_deref())?;
 
     if std::io::stdin().is_terminal() {
         repl.run()?;

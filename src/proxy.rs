@@ -13,7 +13,7 @@ use crate::jupyter::{ConnectionInfo, KernelClient};
 pub fn run(info: &ConnectionInfo) -> Result<()> {
     let client = KernelClient::connect(info)?;
     client.wait_ready(Duration::from_secs(120), || None)?;
-    let port = client.start_server_comm("lsp", Duration::from_secs(30), |_| {})?;
+    let (_, port) = client.start_server_comm("lsp", Duration::from_secs(30), |_| {})?;
     let tcp = TcpStream::connect(("127.0.0.1", port)).context("connecting to ark LSP")?;
 
     let mut to_server = tcp.try_clone()?;

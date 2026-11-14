@@ -1,8 +1,9 @@
 //! The interactive loop: reedline input, Jupyter execution, output rendering.
 
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,16 +11,17 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use nu_ansi_term::{Color, Style};
 use reedline::{
-    default_emacs_keybindings, ColumnarMenu, DefaultHinter, EditCommand, Emacs, FileBackedHistory, KeyCode,
-    KeyModifiers, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline,
+    default_emacs_keybindings, ColumnarMenu, DefaultHinter, EditCommand, Emacs, FileBackedHistory, Highlighter,
+    HistoryItem, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline,
     ReedlineEvent, ReedlineMenu, Signal, ValidationResult, Validator,
 };
 use serde_json::{json, Value};
 
 use crate::highlight::RHighlighter;
+use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
 use crate::kernel::SpawnedKernel;
-use crate::lsp::{LspClient, LspCompleter};
+use crate::lsp::{CompletionBackend, LspClient, LspCompleter};
 
 const UI_COMM_TARGET: &str = "positron.ui";
 
@@ -132,6 +134,25 @@ pub struct Repl {
     /// Text written since the last newline, so input prompts can continue it.
     partial_line: String,
     width: u16,
+    ide: Option<Arc<Ide>>,
+    dap_comm: Option<String>,
+    /// Raised to make `read_line` yield to the main loop (IDE request,
+    /// debugger command, or output from another client).
+    wake: Arc<AtomicBool>,
+    /// IOPub messages collected by the idle pump while the editor waits.
+    idle_inbox: Arc<Mutex<VecDeque<Message>>>,
+    queue: VecDeque<Queued>,
+    /// We yielded mid-edit, so the prompt line is still drawn.
+    prompt_on_screen: bool,
+    echo_highlighter: RHighlighter,
+}
+
+/// Code the console runs on someone else's behalf: the IDE's Run Selection or
+/// a debugger step clicked in the IDE. It is echoed as if typed.
+struct Queued {
+    code: String,
+    location: Option<Value>,
+    remember: bool,
 }
 
 enum Outcome {
@@ -139,33 +160,85 @@ enum Outcome {
     KernelGone,
 }
 
+/// A top-level expression and its (row, byte column) extent in the input.
+#[derive(Debug, PartialEq)]
+struct Chunk {
+    text: String,
+    start: (usize, usize),
+    end: (usize, usize),
+}
+
+fn end_point(code: &str) -> (usize, usize) {
+    let rows = code.matches('\n').count();
+    let last = code.rsplit('\n').next().unwrap_or("");
+    (rows, last.len())
+}
+
+/// Shifts a chunk's position by the location of the whole input, giving the
+/// file location ark uses for srcrefs and breakpoints (columns in UTF-8 bytes).
+fn chunk_location(location: &Value, chunk: &Chunk) -> Value {
+    let base_line = location["range"]["start"]["line"].as_u64().unwrap_or(0) as usize;
+    let base_char = location["range"]["start"]["character"].as_u64().unwrap_or(0) as usize;
+    let shift = |(row, col): (usize, usize)| {
+        json!({ "line": base_line + row, "character": if row == 0 { base_char + col } else { col } })
+    };
+    json!({ "uri": location["uri"], "range": { "start": shift(chunk.start), "end": shift(chunk.end) } })
+}
+
 /// Splits input into top-level R expressions. ark keeps evaluating the
 /// remaining expressions of a request after an interrupt, so the console sends
 /// them one at a time and stops on interrupt or error, like R's own console.
 /// Input that doesn't parse is sent whole so R reports the syntax error.
-fn split_top_level(code: &str) -> Vec<String> {
+fn split_top_level(code: &str) -> Vec<Chunk> {
+    let whole = || {
+        vec![Chunk {
+            text: code.to_string(),
+            start: (0, 0),
+            end: end_point(code),
+        }]
+    };
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&tree_sitter_r::LANGUAGE.into()).is_err() {
-        return vec![code.to_string()];
+        return whole();
     }
     let Some(tree) = parser.parse(code, None) else {
-        return vec![code.to_string()];
+        return whole();
     };
     let root = tree.root_node();
     if root.has_error() {
-        return vec![code.to_string()];
+        return whole();
     }
     let mut cursor = root.walk();
-    let chunks: Vec<String> = root
+    let chunks: Vec<Chunk> = root
         .named_children(&mut cursor)
         .filter(|n| n.kind() != "comment")
-        .map(|n| code[n.byte_range()].to_string())
+        .map(|n| Chunk {
+            text: code[n.byte_range()].to_string(),
+            start: (n.start_position().row, n.start_position().column),
+            end: (n.end_position().row, n.end_position().column),
+        })
         .collect();
-    if chunks.is_empty() { vec![code.to_string()] } else { chunks }
+    if chunks.is_empty() { whole() } else { chunks }
+}
+
+/// True for IOPub traffic that should interrupt line editing: debugger
+/// commands from the IDE, and output produced on behalf of another client.
+fn needs_main_loop(msg: &Message, dap_comm: Option<&str>) -> bool {
+    match msg.msg_type() {
+        "comm_msg" => dap_comm.is_some() && msg.content["comm_id"].as_str() == dap_comm,
+        "stream" | "execute_result" | "display_data" | "error" => true,
+        _ => false,
+    }
 }
 
 impl Repl {
-    pub fn start(client: KernelClient, origin: Origin, use_lsp: bool, interrupted: Arc<AtomicBool>) -> Result<Self> {
+    pub fn start(
+        client: KernelClient,
+        origin: Origin,
+        use_lsp: bool,
+        interrupted: Arc<AtomicBool>,
+        ide_socket: Option<&Path>,
+    ) -> Result<Self> {
         let mut repl = Self {
             client: Arc::new(Mutex::new(client)),
             editor: None,
@@ -179,21 +252,37 @@ impl Repl {
             interrupted,
             partial_line: String::new(),
             width: terminal_width(),
+            ide: None,
+            dap_comm: None,
+            wake: Arc::new(AtomicBool::new(false)),
+            idle_inbox: Arc::new(Mutex::new(VecDeque::new())),
+            queue: VecDeque::new(),
+            prompt_on_screen: false,
+            echo_highlighter: RHighlighter::new(),
         };
         let info = repl.wait_ready(Duration::from_secs(60))?;
         repl.open_ui_comm()?;
-
         let interactive = std::io::stdin().is_terminal();
-        let lsp = if use_lsp && interactive {
+
+        if let Some(path) = ide_socket {
+            let ide = Ide::connect(path, repl.wake.clone())?;
+            repl.ide = Some(ide.clone());
+            repl.open_debugger(&ide)?;
+        }
+
+        let backend = if let Some(ide) = &repl.ide {
+            // Hosted: the IDE owns the kernel's one LSP connection.
+            CompletionBackend::Ide(ide.clone())
+        } else if use_lsp && interactive {
             match repl.open_lsp() {
-                Ok(lsp) => Some(Arc::new(Mutex::new(lsp))),
+                Ok(lsp) => CompletionBackend::Lsp(Arc::new(Mutex::new(lsp))),
                 Err(err) => {
                     eprintln!("{}", Color::Yellow.paint(format!("completion unavailable: {err:#}")));
-                    None
+                    CompletionBackend::None
                 },
             }
         } else {
-            None
+            CompletionBackend::None
         };
 
         if interactive {
@@ -207,13 +296,14 @@ impl Repl {
             println!("{}", Color::Blue.bold().paint(r_version.trim()));
             println!("{}", dim.paint(format!("ark {ark} · {how}")));
             println!("{}", dim.paint("Tab completes · Alt-Enter newline · Ctrl-C interrupts · Ctrl-D quits"));
-            repl.editor = Some(repl.build_editor(lsp)?);
+            repl.editor = Some(repl.build_editor(backend)?);
+            repl.spawn_idle_pump();
             repl.input_editor = Some(Reedline::create());
         }
         Ok(repl)
     }
 
-    fn build_editor(&self, lsp: Option<Arc<Mutex<LspClient>>>) -> Result<Reedline> {
+    fn build_editor(&self, backend: CompletionBackend) -> Result<Reedline> {
         let mut keybindings = default_emacs_keybindings();
         keybindings.add_binding(
             KeyModifiers::NONE,
@@ -235,7 +325,7 @@ impl Repl {
             .with_validator(Box::new(KernelValidator {
                 client: self.client.clone(),
             }))
-            .with_completer(Box::new(LspCompleter { lsp }))
+            .with_completer(Box::new(LspCompleter { backend }))
             .with_menu(ReedlineMenu::EngineCompleter(Box::new(
                 ColumnarMenu::default().with_name("completion_menu").with_marker(""),
             )))
@@ -243,7 +333,8 @@ impl Repl {
             .with_partial_completions(true)
             .with_hinter(Box::new(DefaultHinter::default().with_style(Style::new().fg(Color::DarkGray))))
             .with_edit_mode(Box::new(Emacs::new(keybindings)))
-            .use_bracketed_paste(true);
+            .use_bracketed_paste(true)
+            .with_break_signal(self.wake.clone());
         if let Some(path) = history_path() {
             editor = editor.with_history(Box::new(FileBackedHistory::with_file(10_000, path)?));
         }
@@ -278,9 +369,48 @@ impl Repl {
         Ok(())
     }
 
+    /// While the editor waits, a background thread moves IOPub traffic into
+    /// `idle_inbox` and wakes the main loop for anything that must be acted on
+    /// or shown. It only ever `try_lock`s the client, so it never competes with
+    /// an execute (which holds the lock throughout). Not a reedline idle
+    /// callback: those force a cursor-position query on every repaint.
+    fn spawn_idle_pump(&self) {
+        let client = Arc::downgrade(&self.client);
+        let inbox = self.idle_inbox.clone();
+        let wake = self.wake.clone();
+        let dap_comm = self.dap_comm.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(50));
+                let Some(client) = client.upgrade() else { return };
+                let Ok(client) = client.try_lock() else { continue };
+                while let Ok(Some((_, msg))) = client.poll(&[Channel::Iopub], Duration::ZERO) {
+                    if needs_main_loop(&msg, dap_comm.as_deref()) {
+                        wake.store(true, Ordering::SeqCst);
+                    }
+                    inbox.lock().unwrap().push_back(msg);
+                }
+            }
+        });
+    }
+
+    /// Opens ark's debugger comm and tells the IDE which port to attach to.
+    /// Holding the comm makes this console the one that runs debugger
+    /// commands (`n`, `c`, ...) clicked in the IDE.
+    fn open_debugger(&mut self, ide: &Ide) -> Result<()> {
+        let client = self.client.clone();
+        let (comm_id, port) = client
+            .lock()
+            .unwrap()
+            .start_server_comm("ark_dap", Duration::from_secs(15), |msg| self.handle_iopub(msg))?;
+        self.dap_comm = Some(comm_id);
+        ide.send(json!({ "type": "dap_port", "port": port }));
+        Ok(())
+    }
+
     fn open_lsp(&mut self) -> Result<LspClient> {
         let client = self.client.clone();
-        let port = client
+        let (_, port) = client
             .lock()
             .unwrap()
             .start_server_comm("lsp", Duration::from_secs(15), |msg| self.handle_iopub(msg))?;
@@ -289,25 +419,35 @@ impl Repl {
 
     pub fn run(&mut self) -> Result<()> {
         loop {
-            self.drain_iopub()?;
+            self.pump()?;
+            if let Some(job) = self.queue.pop_front() {
+                if job.remember {
+                    self.remember(&job.code);
+                }
+                if let Outcome::KernelGone = self.execute_all(&job.code, job.location.as_ref(), true)? {
+                    break;
+                }
+                continue;
+            }
             self.sync_width();
             self.finish_line();
             if self.kernel_gone() {
                 break;
             }
             let prompt = self.prompt.clone();
-            let signal = self.editor.as_mut().expect("interactive editor").read_line(&prompt)?;
-            match signal {
+            // After a yield, reedline keeps the partially typed buffer itself.
+            let editor = self.editor.as_mut().expect("interactive editor");
+            match editor.read_line(&prompt)? {
                 Signal::Success(code) => {
                     // An empty line is meaningful in the debugger (it steps).
                     if code.trim().is_empty() && !prompt.is_browser() {
                         continue;
                     }
-                    match self.execute_all(&code)? {
-                        Outcome::KernelGone => break,
-                        Outcome::Done { .. } => {},
+                    if let Outcome::KernelGone = self.execute_all(&code, None, false)? {
+                        break;
                     }
                 },
+                Signal::ExternalBreak(_) => self.prompt_on_screen = true,
                 Signal::CtrlD => break,
                 _ => continue,
             }
@@ -317,10 +457,65 @@ impl Repl {
         Ok(())
     }
 
+    /// Handles IOPub traffic gathered while idle, then IDE requests.
+    fn pump(&mut self) -> Result<()> {
+        let gathered: Vec<Message> = self.idle_inbox.lock().unwrap().drain(..).collect();
+        for msg in &gathered {
+            self.handle_iopub(msg);
+        }
+        self.drain_iopub()?;
+        let events = self.ide.as_ref().map(|ide| ide.take_events()).unwrap_or_default();
+        for event in events {
+            if event["type"] == "execute"
+                && let Some(code) = event["code"].as_str()
+            {
+                self.queue.push_back(Queued {
+                    code: code.to_string(),
+                    location: event.get("location").filter(|l| !l.is_null()).cloned(),
+                    remember: true,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Shows queued code after the prompt, highlighted, as if it were typed.
+    fn echo(&mut self, code: &str) {
+        self.clear_prompt();
+        self.finish_line();
+        let prompt_style = if self.prompt.is_browser() { Color::Yellow } else { Color::Blue }.normal();
+        let cont_style = Color::DarkGray.normal();
+        let mut out = prompt_style.paint(&self.prompt.input).to_string();
+        for (style, text) in self.echo_highlighter.highlight(code, 0).buffer {
+            for (i, part) in text.split('\n').enumerate() {
+                if i > 0 {
+                    out.push('\n');
+                    out.push_str(&cont_style.paint(&self.prompt.continuation).to_string());
+                }
+                out.push_str(&style.paint(part).to_string());
+            }
+        }
+        println!("{out}");
+        let _ = std::io::stdout().flush();
+    }
+
+    fn remember(&mut self, code: &str) {
+        if let Some(editor) = self.editor.as_mut() {
+            let _ = editor.history_mut().save(HistoryItem::from_command_line(code));
+        }
+    }
+
+    /// Erases the prompt line left on screen after yielding mid-edit.
+    fn clear_prompt(&mut self) {
+        if std::mem::take(&mut self.prompt_on_screen) {
+            print!("\r\x1b[2K");
+        }
+    }
+
     /// Non-interactive mode: run piped input, stopping at the first error.
     /// Returns false on an R error or if the R session died.
     pub fn run_script(&mut self, code: &str) -> Result<bool> {
-        let ok = match self.execute_all(code)? {
+        let ok = match self.execute_all(code, None, false)? {
             Outcome::Done { error, .. } => !error,
             Outcome::KernelGone => true,
         };
@@ -329,10 +524,16 @@ impl Repl {
         Ok(ok && clean)
     }
 
-    fn execute_all(&mut self, code: &str) -> Result<Outcome> {
+    /// Runs each top-level expression in turn. `echo` shows each one after the
+    /// prompt first, for code that wasn't typed here.
+    fn execute_all(&mut self, code: &str, location: Option<&Value>, echo: bool) -> Result<Outcome> {
         let mut last = Outcome::Done { error: false, interrupted: false };
         for chunk in split_top_level(code) {
-            last = self.execute(&chunk)?;
+            if echo {
+                self.echo(&chunk.text);
+            }
+            let location = location.map(|l| chunk_location(l, &chunk));
+            last = self.execute(&chunk.text, location)?;
             if !matches!(last, Outcome::Done { error: false, interrupted: false }) {
                 break;
             }
@@ -340,21 +541,23 @@ impl Repl {
         Ok(last)
     }
 
-    fn execute(&mut self, code: &str) -> Result<Outcome> {
+    /// Runs one request. A file `location` gives R real srcrefs, so the
+    /// debugger shows the editor's file and IDE breakpoints apply.
+    fn execute(&mut self, code: &str, location: Option<Value>) -> Result<Outcome> {
         let client = self.client.clone();
         let client = client.lock().unwrap();
-        let msg_id = client.send(
-            Channel::Shell,
-            "execute_request",
-            json!({
-                "code": code,
-                "silent": false,
-                "store_history": true,
-                "user_expressions": {},
-                "allow_stdin": true,
-                "stop_on_error": true,
-            }),
-        )?;
+        let mut request = json!({
+            "code": code,
+            "silent": false,
+            "store_history": true,
+            "user_expressions": {},
+            "allow_stdin": true,
+            "stop_on_error": true,
+        });
+        if let Some(location) = location {
+            request["positron"] = json!({ "code_location": location });
+        }
+        let msg_id = client.send(Channel::Shell, "execute_request", request)?;
         self.interrupted.store(false, Ordering::SeqCst);
         let (mut idle, mut reply) = (false, None::<Value>);
         let mut interrupted = false;
@@ -419,6 +622,28 @@ impl Repl {
                 if traceback.len() > 1 {
                     self.write(&traceback.join("\n"), Some(Color::DarkGray.normal()));
                     self.finish_line();
+                }
+            },
+            "comm_msg" if self.dap_comm.is_some() && self.dap_comm.as_deref() == c["comm_id"].as_str() => {
+                let data = &c["data"];
+                match data["method"].as_str() {
+                    Some(state @ ("start_debug" | "stop_debug")) => {
+                        let state = if state == "start_debug" { "start" } else { "stop" };
+                        if let Some(ide) = &self.ide {
+                            ide.send(json!({ "type": "debug", "state": state }));
+                        }
+                    },
+                    // A step/continue clicked in the IDE, to be run at the browser prompt.
+                    Some("execute") => {
+                        if let Some(command) = data["params"]["command"].as_str() {
+                            self.queue.push_back(Queued {
+                                code: command.to_string(),
+                                location: None,
+                                remember: false,
+                            });
+                        }
+                    },
+                    _ => {},
                 }
             },
             "comm_msg" if self.ui_comm.as_deref() == c["comm_id"].as_str() => {
@@ -527,6 +752,7 @@ impl Repl {
         if text.is_empty() {
             return;
         }
+        self.clear_prompt();
         let mut out = std::io::stdout().lock();
         let _ = match style {
             Some(style) => write!(out, "{}", style.paint(text)),
@@ -639,20 +865,38 @@ fn read_password(prompt: &str) -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_browser_prompt, split_top_level};
+    use serde_json::{json, Value};
+
+    use super::{chunk_location, is_browser_prompt, split_top_level};
+
+    fn texts(code: &str) -> Vec<String> {
+        split_top_level(code).into_iter().map(|c| c.text).collect()
+    }
 
     #[test]
     fn splits_top_level_expressions() {
-        assert_eq!(split_top_level("Sys.sleep(5); print(1)"), vec!["Sys.sleep(5)", "print(1)"]);
+        assert_eq!(texts("Sys.sleep(5); print(1)"), vec!["Sys.sleep(5)", "print(1)"]);
         assert_eq!(
-            split_top_level("f <- function() {\n  a; b\n}\n# note\nf()"),
+            texts("f <- function() {\n  a; b\n}\n# note\nf()"),
             vec!["f <- function() {\n  a; b\n}", "f()"]
         );
         // Unparseable input goes through whole so R reports the error.
-        assert_eq!(split_top_level("x <- ; y"), vec!["x <- ; y"]);
+        assert_eq!(texts("x <- ; y"), vec!["x <- ; y"]);
         // Browser commands like `n` and empty input stay intact.
-        assert_eq!(split_top_level("n"), vec!["n"]);
-        assert_eq!(split_top_level(""), vec![""]);
+        assert_eq!(texts("n"), vec!["n"]);
+        assert_eq!(texts(""), vec![""]);
+    }
+
+    #[test]
+    fn chunk_locations_are_shifted_into_the_file() {
+        // Selection starts at line 10, byte column 4 of the file.
+        let loc = json!({ "uri": "file:///p/a.R",
+            "range": { "start": { "line": 10, "character": 4 }, "end": { "line": 12, "character": 5 } } });
+        let chunks = split_top_level("a <- 1; f <- function() {\n  é\n}");
+        let shifted: Vec<Value> = chunks.iter().map(|c| chunk_location(&loc, c)["range"].clone()).collect();
+        assert_eq!(shifted[0], json!({ "start": { "line": 10, "character": 4 }, "end": { "line": 10, "character": 10 } }));
+        // Second chunk ends on a later line: its end column is not shifted. "}" ends at byte 1.
+        assert_eq!(shifted[1], json!({ "start": { "line": 10, "character": 12 }, "end": { "line": 12, "character": 1 } }));
     }
 
     #[test]
