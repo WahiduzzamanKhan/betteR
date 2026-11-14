@@ -1,4 +1,4 @@
-# betterr: terminal R console (Phases 1 and 3)
+# betterr: terminal R console (Phases 1, 3 and 4)
 
 A Rust R console that runs in any terminal and drives a single **ark** R session over Jupyter. Highlighting comes from tree-sitter-r. Completion comes from ark's LSP, the same engine the VS Code editor will use in Phase 2. Nothing is installed into the R library.
 
@@ -33,6 +33,7 @@ cargo test                                          # unit tests
 | History, fish-style hints, Alt-Enter newline, bracketed paste, reverse-i-search | reedline (history in `~/Library/Application Support/betterr/history.txt`, or `$BETTERR_HISTORY`) |
 | `options(width)` follows the terminal width | Set at startup and updated on resize, through the UI comm |
 | Attach mode (`-f`) | Shares state with the other client in both directions. Detaching leaves the kernel running; a session the console spawned is shut down on exit. |
+| Plots | Drawn inline in terminals with an image protocol: iTerm2 and WezTerm (OSC 1337), and kitty. Override detection with `BETTERR_INLINE_IMAGES=iterm|kitty|none`; VS Code's terminal works with `iterm` if `terminal.integrated.enableImages` is on. Otherwise a one-line hint is printed. When hosted by the extension, plots go to its *R Plots* pane instead. |
 | Crash handling | Heartbeat plus child-process monitoring. On a crash it reports the error, exits 1 and keeps the ark log. |
 
 ## Ark protocol findings from Phase 1
@@ -41,7 +42,7 @@ cargo test                                          # unit tests
 2. **The prompt is only reported through the `positron.ui` comm** (`prompt_state` event). The console opens this comm only to track `Browse[N]>` and to set the console width. It's an ordinary Jupyter comm and needs no Positron UI.
 3. **Frontend RPCs block R.** With the UI comm open, R functions that call the frontend (for example `View()` and `rstudioapi` shims) send `rpc_request` on stdin and wait for an answer. The console replies with a JSON-RPC "method not found" error so R never hangs.
 4. **Interrupts don't cancel queued expressions.** If you Ctrl-C `Sys.sleep(30); save()`, ark still runs `save()`. The console works around this by splitting input into top-level expressions with tree-sitter and sending them one at a time, stopping on interrupt or error, like R's own console. Input that doesn't parse is sent whole so R reports the syntax error. This deserves an upstream ark fix.
-5. **Plots** arrive as `display_data` `image/png` even without Positron's plot comm, which is a good starting point for Phase 4. For now the console prints a placeholder.
+5. **Plots.** Without the UI comm, ark sends static `display_data` PNGs. With it, which is how the console runs, every plot is a `positron.plot` comm: a `comm_open` with a 640×400 PNG `pre_render`, then `update` events (for example after `lines()`), and `render` requests at any size and format. `dev.off()` doesn't close plot comms, so history survives. Update payloads come as unpadded base64; the console pads them before passing them on.
 
 ## Hosted mode and ark debugger findings (Phase 3)
 
