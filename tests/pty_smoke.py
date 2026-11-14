@@ -28,7 +28,8 @@ class Term:
     """pexpect wrapper that answers cursor-position queries (reedline sends them)."""
 
     def __init__(self):
-        env = dict(os.environ, BETTERR_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"))
+        env = dict(os.environ, BETTERR_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"),
+                   BETTERR_INLINE_IMAGES="iterm")
         self.p = pexpect.spawn(BIN, dimensions=(40, 120), encoding="utf-8", timeout=30, env=env)
         self.raw = ""
 
@@ -112,6 +113,9 @@ ok, out = t.run("z", until=BROWSE)
 check("browser() evaluates in frame", ok and "[1] 5" in out, out)
 ok, out = t.run("c")
 check("browser() continue returns to top level", ok and "[1] 10" in out, out)
+
+ok, out = t.run("plot(1:3)")
+check("plot drawn inline (iTerm2 image protocol)", ok and "\x1b]1337;File=inline=1" in t.raw, out[-200:])
 
 t.raw = ""
 t.p.send("Sys.sleep(30); print('not interrupted')\r")
