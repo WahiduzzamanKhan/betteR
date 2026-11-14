@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use nu_ansi_term::{Color, Style};
 use reedline::{
     default_emacs_keybindings, ColumnarMenu, DefaultHinter, EditCommand, Emacs, FileBackedHistory, KeyCode,
@@ -250,49 +250,12 @@ impl Repl {
         Ok(editor)
     }
 
-    /// Sends `kernel_info_request` until both the shell reply and the matching
-    /// IOPub status arrive, which guarantees the IOPub subscription is live.
     fn wait_ready(&mut self, timeout: Duration) -> Result<Value> {
-        let deadline = Instant::now() + timeout;
         let client = self.client.clone();
         let client = client.lock().unwrap();
-        loop {
-            if Instant::now() > deadline {
-                bail!("kernel did not become ready within {timeout:?}");
-            }
-            if self.kernel_exited() {
-                bail!("kernel exited during startup{}", self.log_hint());
-            }
-            let id = client.send(Channel::Shell, "kernel_info_request", json!({}))?;
-            let (mut reply, mut iopub) = (None, false);
-            let until = Instant::now() + Duration::from_millis(500);
-            while Instant::now() < until {
-                let Some((channel, msg)) = client.poll(&[Channel::Shell, Channel::Iopub], Duration::from_millis(50))?
-                else {
-                    continue;
-                };
-                if msg.parent_id() != Some(id.as_str()) {
-                    continue;
-                }
-                match channel {
-                    Channel::Shell => reply = Some(msg.content),
-                    _ => iopub = true,
-                }
-                if iopub && let Some(reply) = reply.take() {
-                    return Ok(reply);
-                }
-            }
-        }
-    }
-
-    fn open_comm(&self, client: &KernelClient, target: &str, data: Value) -> Result<String> {
-        let comm_id = uuid::Uuid::new_v4().to_string();
-        client.send(
-            Channel::Shell,
-            "comm_open",
-            json!({ "comm_id": comm_id, "target_name": target, "data": data }),
-        )?;
-        Ok(comm_id)
+        client.wait_ready(timeout, || {
+            self.kernel_exited().then(|| format!("kernel exited during startup{}", self.log_hint()))
+        })
     }
 
     /// The UI comm gives us prompt changes (e.g. `Browse[1]>`) and lets R
@@ -300,7 +263,7 @@ impl Repl {
     fn open_ui_comm(&mut self) -> Result<()> {
         let client = self.client.clone();
         let client = client.lock().unwrap();
-        let comm_id = self.open_comm(&client, UI_COMM_TARGET, json!({ "console_width": self.width }))?;
+        let comm_id = client.open_comm(UI_COMM_TARGET, json!({ "console_width": self.width }))?;
         self.ui_comm = Some(comm_id);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -317,27 +280,10 @@ impl Repl {
 
     fn open_lsp(&mut self) -> Result<LspClient> {
         let client = self.client.clone();
-        let port = {
-            let client = client.lock().unwrap();
-            let comm_id = self.open_comm(&client, "lsp", json!({ "ip_address": "127.0.0.1" }))?;
-            let deadline = Instant::now() + Duration::from_secs(15);
-            loop {
-                if Instant::now() > deadline {
-                    bail!("ark did not start its LSP server");
-                }
-                let Some((_, msg)) = client.poll(&[Channel::Iopub], Duration::from_millis(100))? else {
-                    continue;
-                };
-                let data = &msg.content["data"];
-                if msg.msg_type() == "comm_msg" && msg.content["comm_id"] == comm_id.as_str() {
-                    if data["method"] == "server_started" {
-                        break data["params"]["port"].as_u64().unwrap_or(0) as u16;
-                    }
-                } else {
-                    self.handle_iopub(&msg);
-                }
-            }
-        };
+        let port = client
+            .lock()
+            .unwrap()
+            .start_server_comm("lsp", Duration::from_secs(15), |msg| self.handle_iopub(msg))?;
         LspClient::connect(port, &std::env::current_dir()?)
     }
 

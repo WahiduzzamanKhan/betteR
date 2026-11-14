@@ -245,6 +245,80 @@ impl KernelClient {
     }
 }
 
+impl KernelClient {
+    /// Sends `kernel_info_request` until both the shell reply and the matching
+    /// IOPub status arrive, which guarantees the IOPub subscription is live.
+    /// `abort` is polled between attempts and fails startup with its message.
+    pub fn wait_ready(&self, timeout: Duration, mut abort: impl FnMut() -> Option<String>) -> Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if Instant::now() > deadline {
+                bail!("kernel did not become ready within {timeout:?}");
+            }
+            if let Some(reason) = abort() {
+                bail!(reason);
+            }
+            let id = self.send(Channel::Shell, "kernel_info_request", json!({}))?;
+            let (mut reply, mut iopub) = (None, false);
+            let until = Instant::now() + Duration::from_millis(500);
+            while Instant::now() < until {
+                let Some((channel, msg)) = self.poll(&[Channel::Shell, Channel::Iopub], Duration::from_millis(50))?
+                else {
+                    continue;
+                };
+                if msg.parent_id() != Some(id.as_str()) {
+                    continue;
+                }
+                match channel {
+                    Channel::Shell => reply = Some(msg.content),
+                    _ => iopub = true,
+                }
+                if iopub && let Some(reply) = reply.take() {
+                    return Ok(reply);
+                }
+            }
+        }
+    }
+
+    pub fn open_comm(&self, target: &str, data: Value) -> Result<String> {
+        let comm_id = uuid::Uuid::new_v4().to_string();
+        self.send(
+            Channel::Shell,
+            "comm_open",
+            json!({ "comm_id": comm_id, "target_name": target, "data": data }),
+        )?;
+        Ok(comm_id)
+    }
+
+    /// Opens a server comm (`lsp`, `ark_dap`) and returns the TCP port ark
+    /// reports in `server_started`. Other IOPub traffic goes to `on_other`.
+    pub fn start_server_comm(
+        &self,
+        target: &str,
+        timeout: Duration,
+        mut on_other: impl FnMut(&Message),
+    ) -> Result<u16> {
+        let comm_id = self.open_comm(target, json!({ "ip_address": "127.0.0.1" }))?;
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let Some((_, msg)) = self.poll(&[Channel::Iopub], Duration::from_millis(100))? else {
+                continue;
+            };
+            let data = &msg.content["data"];
+            if msg.msg_type() == "comm_msg" && msg.content["comm_id"] == comm_id.as_str() {
+                if data["method"] == "server_started"
+                    && let Some(port) = data["params"]["port"].as_u64()
+                {
+                    return Ok(port as u16);
+                }
+            } else {
+                on_other(&msg);
+            }
+        }
+        bail!("ark did not start its {target} server")
+    }
+}
+
 /// Pings the kernel's heartbeat socket every second and clears `alive` after
 /// several missed pongs.
 fn spawn_heartbeat(ctx: zmq::Context, endpoint: String, alive: Arc<AtomicBool>) {
