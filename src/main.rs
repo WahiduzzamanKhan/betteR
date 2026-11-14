@@ -5,6 +5,7 @@ mod highlight;
 mod jupyter;
 mod kernel;
 mod lsp;
+mod proxy;
 mod repl;
 
 use std::io::{IsTerminal, Read};
@@ -28,6 +29,7 @@ OPTIONS:
         --ark <PATH>              ark binary to launch (default: $ARK_PATH, PATH, dev build)
         --log <PATH>              Write the launched kernel's log here
         --no-lsp                  Disable LSP-backed completion
+        --lsp-stdio               Bridge ark's LSP to stdin/stdout for an editor (needs -f)
     -h, --help                    Show this help
     -V, --version                 Show version
 
@@ -38,6 +40,7 @@ struct Args {
     ark: Option<PathBuf>,
     log: Option<PathBuf>,
     lsp: bool,
+    lsp_stdio: bool,
 }
 
 fn parse_args() -> Result<Option<Args>> {
@@ -46,6 +49,7 @@ fn parse_args() -> Result<Option<Args>> {
         ark: None,
         log: None,
         lsp: true,
+        lsp_stdio: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -55,6 +59,7 @@ fn parse_args() -> Result<Option<Args>> {
             "--ark" => args.ark = Some(value(&arg)?.into()),
             "--log" => args.log = Some(value(&arg)?.into()),
             "--no-lsp" => args.lsp = false,
+            "--lsp-stdio" => args.lsp_stdio = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(None);
@@ -83,6 +88,12 @@ fn run() -> Result<i32> {
     let Some(args) = parse_args()? else {
         return Ok(0);
     };
+
+    if args.lsp_stdio {
+        let path = args.connection_file.as_ref().context("--lsp-stdio needs --connection-file")?;
+        proxy::run(&ConnectionInfo::read(path)?)?;
+        return Ok(0);
+    }
 
     // Ctrl-C outside of line editing (i.e. while R is busy) interrupts the
     // kernel rather than killing the console.
