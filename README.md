@@ -9,6 +9,7 @@ export PATH=/opt/homebrew/opt/rustup/bin:$PATH     # Homebrew rustup is keg-only
 cd console && cargo build
 ./target/debug/betterr                              # start a new ark session
 ./target/debug/betterr -f /path/to/kernel.json      # attach to a running kernel (Phase 2)
+./target/debug/betterr --lsp-stdio -f kernel.json   # bridge ark's LSP to stdio (used by the VS Code extension)
 echo 'summary(mtcars)' | ./target/debug/betterr     # piped: run and exit (exit 1 on R error)
 
 cargo test                                          # unit tests
