@@ -1,4 +1,4 @@
-# betterr — terminal R console (Phase 1)
+# betterr: terminal R console (Phases 1 and 3)
 
 A Rust R console that runs in any terminal and drives a single **ark** R session over Jupyter. Highlighting comes from tree-sitter-r. Completion comes from ark's LSP, the same engine the VS Code editor will use in Phase 2. Nothing is installed into the R library.
 
@@ -10,6 +10,7 @@ cd console && cargo build
 ./target/debug/betterr                              # start a new ark session
 ./target/debug/betterr -f /path/to/kernel.json      # attach to a running kernel (Phase 2)
 ./target/debug/betterr --lsp-stdio -f kernel.json   # bridge ark's LSP to stdio (used by the VS Code extension)
+./target/debug/betterr -f kernel.json --ide-socket ide.sock   # hosted by the VS Code extension (Run Selection, debugger, completion)
 echo 'summary(mtcars)' | ./target/debug/betterr     # piped: run and exit (exit 1 on R error)
 
 cargo test                                          # unit tests
@@ -36,11 +37,27 @@ cargo test                                          # unit tests
 
 ## Ark protocol findings from Phase 1
 
-1. **Jupyter `complete_request` is a stub** (as found in Phase 0), so completion goes through the LSP. **Two LSP clients on one kernel work.** Ark keeps one "console inputs" channel, and the newest LSP connection takes it over, but completion queries the live session directly. Tested: both clients see new objects, including after one disconnects. The console and the VS Code extension can therefore each open their own `lsp` comm.
+1. **Jupyter `complete_request` is a stub** (as found in Phase 0), so completion goes through the LSP. **Two LSP clients on one kernel work for completion.** Ark keeps one "console inputs" channel, and the newest LSP connection takes it over, but completion queries the live session directly. Tested: both clients see new objects, including after one disconnects. When hosted by the extension (Phase 3), the console still uses the extension's LSP client so the editor gets the console channel; see below.
 2. **The prompt is only reported through the `positron.ui` comm** (`prompt_state` event). The console opens this comm only to track `Browse[N]>` and to set the console width. It's an ordinary Jupyter comm and needs no Positron UI.
 3. **Frontend RPCs block R.** With the UI comm open, R functions that call the frontend (for example `View()` and `rstudioapi` shims) send `rpc_request` on stdin and wait for an answer. The console replies with a JSON-RPC "method not found" error so R never hangs.
 4. **Interrupts don't cancel queued expressions.** If you Ctrl-C `Sys.sleep(30); save()`, ark still runs `save()`. The console works around this by splitting input into top-level expressions with tree-sitter and sending them one at a time, stopping on interrupt or error, like R's own console. Input that doesn't parse is sent whole so R reports the syntax error. This deserves an upstream ark fix.
 5. **Plots** arrive as `display_data` `image/png` even without Positron's plot comm, which is a good starting point for Phase 4. For now the console prints a placeholder.
+
+## Hosted mode and ark debugger findings (Phase 3)
+
+With `--ide-socket`, the console connects to its host IDE over JSON lines on a Unix socket, and:
+
+- **It opens ark's `ark_dap` comm and reports the DAP port.** The comm holder is the frontend ark asks to run debugger commands. A Step clicked in the IDE arrives as a comm `execute {command: "n"}`. A background thread watches IOPub while the line editor waits, and raises reedline's break signal so the command is echoed (`Browse[1]> n`) and run as if typed.
+- **It runs IDE `execute` requests** with `positron.code_location`. Each top-level expression gets its own location shifted into the file, using tree-sitter byte positions, and is echoed at its own prompt. Half-typed input survives because reedline keeps its buffer across a break.
+- **It forwards ark's `start_debug` / `stop_debug` hints**, which the extension uses to attach or detach VS Code's debugger.
+- **It completes through the IDE's language client** instead of its own LSP, so ark keeps a single LSP client. Ark only sends console scopes and `ark:` virtual documents to its newest LSP connection.
+
+Ark findings:
+1. **Every step emits `stop_debug` then `start_debug`.** Treating `stop_debug` as "done" and disconnecting makes ark inject `Q`.
+2. **Attaching a DAP client while R is already paused doesn't produce a `stopped` event.**
+3. **Functions without a file srcref are served as `ark:ark-<pid>/debug/...` virtual documents**, through the LSP request `ark/internal/virtualDocument {path}`.
+
+Watching IOPub from a reedline *idle callback* would make reedline re-query the cursor position on every repaint, and leave raw mode on while it waits for the answer. That's why it's a separate thread that only `try_lock`s the client.
 
 ## Known limitations / next steps
 
