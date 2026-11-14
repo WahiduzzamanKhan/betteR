@@ -22,6 +22,7 @@ use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
 use crate::kernel::SpawnedKernel;
 use crate::lsp::{CompletionBackend, LspClient, LspCompleter};
+use crate::plots::{detect_image_protocol, inline_image, ImageProtocol, PlotEvent, PlotRelay};
 
 const UI_COMM_TARGET: &str = "positron.ui";
 
@@ -148,6 +149,8 @@ pub struct Repl {
     /// The running code was typed here (not sent by the IDE), so a debugger
     /// stop it causes should leave keyboard focus in the console.
     running_typed_input: bool,
+    plots: Arc<PlotRelay>,
+    image_protocol: Option<ImageProtocol>,
 }
 
 /// Code the console runs on someone else's behalf: the IDE's Run Selection or
@@ -263,6 +266,8 @@ impl Repl {
             prompt_on_screen: false,
             echo_highlighter: RHighlighter::new(),
             running_typed_input: false,
+            plots: Arc::new(PlotRelay::new(None)),
+            image_protocol: detect_image_protocol(),
         };
         let info = repl.wait_ready(Duration::from_secs(60))?;
         repl.open_ui_comm()?;
@@ -271,6 +276,11 @@ impl Repl {
         if let Some(path) = ide_socket {
             let ide = Ide::connect(path, repl.wake.clone())?;
             repl.ide = Some(ide.clone());
+            let plots = PlotRelay::new(Some(ide.clone()));
+            if let Some(ui) = &repl.ui_comm {
+                plots.set_ui_comm(ui);
+            }
+            repl.plots = Arc::new(plots);
             repl.open_debugger(&ide)?;
         }
 
@@ -383,12 +393,19 @@ impl Repl {
         let inbox = self.idle_inbox.clone();
         let wake = self.wake.clone();
         let dap_comm = self.dap_comm.clone();
+        let plots = self.plots.clone();
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_millis(50));
                 let Some(client) = client.upgrade() else { return };
                 let Ok(client) = client.try_lock() else { continue };
+                // Hosted plot traffic is relayed right here, without
+                // interrupting whatever is being typed at the prompt.
+                plots.send_requests(&client);
                 while let Ok(Some((_, msg))) = client.poll(&[Channel::Iopub], Duration::ZERO) {
+                    if plots.hosted() && !matches!(plots.handle(&msg), PlotEvent::None) {
+                        continue;
+                    }
                     if needs_main_loop(&msg, dap_comm.as_deref()) {
                         wake.store(true, Ordering::SeqCst);
                     }
@@ -506,6 +523,24 @@ impl Repl {
         let _ = std::io::stdout().flush();
     }
 
+    /// Draws a plot inline if the terminal can show images.
+    fn show_image(&mut self, png_base64: &str) {
+        self.clear_prompt();
+        self.finish_line();
+        match self.image_protocol {
+            Some(protocol) => {
+                println!("{}", inline_image(protocol, png_base64));
+                let _ = std::io::stdout().flush();
+            },
+            None => {
+                let hint = "[plot: this terminal can't show images; use iTerm2, WezTerm or kitty, \
+                            set BETTERR_INLINE_IMAGES, or the VS Code extension's plot pane]";
+                self.write(hint, Some(Color::DarkGray.normal()));
+                self.finish_line();
+            },
+        }
+    }
+
     fn remember(&mut self, code: &str) {
         if let Some(editor) = self.editor.as_mut() {
             let _ = editor.history_mut().save(HistoryItem::from_command_line(code));
@@ -598,6 +633,11 @@ impl Repl {
     }
 
     fn handle_iopub(&mut self, msg: &Message) {
+        match self.plots.handle(msg) {
+            PlotEvent::None => {},
+            PlotEvent::Handled => return,
+            PlotEvent::Image(png) => return self.show_image(&png),
+        }
         let c = &msg.content;
         match msg.msg_type() {
             "stream" => {
@@ -610,7 +650,9 @@ impl Repl {
             },
             "execute_result" | "display_data" => {
                 let data = &c["data"];
-                if let Some(text) = data["text/plain"].as_str() {
+                if let Some(png) = data["image/png"].as_str() {
+                    self.show_image(png);
+                } else if let Some(text) = data["text/plain"].as_str() {
                     self.write(text, None);
                 } else if let Some(mime) = data.as_object().and_then(|d| d.keys().next()) {
                     self.write(&format!("[{mime} output: terminal rendering not implemented yet]"), Some(Color::DarkGray.normal()));

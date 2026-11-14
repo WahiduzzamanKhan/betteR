@@ -1,8 +1,10 @@
 //! Channel between the console and its host IDE (the VS Code extension),
 //! carried as JSON lines over a Unix socket the IDE listens on.
 //!
-//! Console -> IDE: `dap_port`, `debug` (start/stop), `complete` requests.
-//! IDE -> console: `execute` (code + optional file location), `complete_reply`.
+//! Console -> IDE: `dap_port`, `debug` (start/stop), `complete` requests,
+//! plot events (`plot_open`, `plot_update`, `plot_close`, `plot_render_reply`).
+//! IDE -> console: `execute` (code + optional file location), `complete_reply`,
+//! plot requests (`plot_render`, `plot_settings`, `plot_close`).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -20,6 +22,9 @@ pub struct Ide {
     writer: Mutex<UnixStream>,
     pending: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
     inbox: Mutex<VecDeque<Value>>,
+    /// Plot requests are served by the background IOPub thread without
+    /// interrupting line editing, so they're kept apart from `inbox`.
+    plot_requests: Mutex<VecDeque<Value>>,
     next_id: AtomicU64,
 }
 
@@ -33,6 +38,7 @@ impl Ide {
             writer: Mutex::new(stream),
             pending: Mutex::new(HashMap::new()),
             inbox: Mutex::new(VecDeque::new()),
+            plot_requests: Mutex::new(VecDeque::new()),
             next_id: AtomicU64::new(1),
         });
         let weak = Arc::downgrade(&ide);
@@ -45,6 +51,8 @@ impl Ide {
                     if let Some(tx) = msg["id"].as_u64().and_then(|id| ide.pending.lock().unwrap().remove(&id)) {
                         let _ = tx.send(msg["items"].clone());
                     }
+                } else if msg["type"].as_str().is_some_and(|t| t.starts_with("plot_")) {
+                    ide.plot_requests.lock().unwrap().push_back(msg);
                 } else {
                     ide.inbox.lock().unwrap().push_back(msg);
                     wake.store(true, Ordering::SeqCst);
@@ -62,6 +70,10 @@ impl Ide {
 
     pub fn take_events(&self) -> Vec<Value> {
         self.inbox.lock().unwrap().drain(..).collect()
+    }
+
+    pub fn take_plot_requests(&self) -> Vec<Value> {
+        self.plot_requests.lock().unwrap().drain(..).collect()
     }
 
     /// Asks the IDE's language client for completions. `offset` is a byte

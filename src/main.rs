@@ -6,6 +6,7 @@ mod ide;
 mod jupyter;
 mod kernel;
 mod lsp;
+mod plots;
 mod proxy;
 mod repl;
 
