@@ -145,6 +145,9 @@ pub struct Repl {
     /// We yielded mid-edit, so the prompt line is still drawn.
     prompt_on_screen: bool,
     echo_highlighter: RHighlighter,
+    /// The running code was typed here (not sent by the IDE), so a debugger
+    /// stop it causes should leave keyboard focus in the console.
+    running_typed_input: bool,
 }
 
 /// Code the console runs on someone else's behalf: the IDE's Run Selection or
@@ -259,6 +262,7 @@ impl Repl {
             queue: VecDeque::new(),
             prompt_on_screen: false,
             echo_highlighter: RHighlighter::new(),
+            running_typed_input: false,
         };
         let info = repl.wait_ready(Duration::from_secs(60))?;
         repl.open_ui_comm()?;
@@ -443,7 +447,10 @@ impl Repl {
                     if code.trim().is_empty() && !prompt.is_browser() {
                         continue;
                     }
-                    if let Outcome::KernelGone = self.execute_all(&code, None, false)? {
+                    self.running_typed_input = true;
+                    let outcome = self.execute_all(&code, None, false);
+                    self.running_typed_input = false;
+                    if let Outcome::KernelGone = outcome? {
                         break;
                     }
                 },
@@ -630,7 +637,8 @@ impl Repl {
                     Some(state @ ("start_debug" | "stop_debug")) => {
                         let state = if state == "start_debug" { "start" } else { "stop" };
                         if let Some(ide) = &self.ide {
-                            ide.send(json!({ "type": "debug", "state": state }));
+                            let origin = if self.running_typed_input { "console" } else { "ide" };
+                            ide.send(json!({ "type": "debug", "state": state, "origin": origin }));
                         }
                     },
                     // A step/continue clicked in the IDE, to be run at the browser prompt.
