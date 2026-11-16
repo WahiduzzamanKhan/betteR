@@ -2,7 +2,8 @@
 //! carried as JSON lines over a Unix socket the IDE listens on.
 //!
 //! Console -> IDE: `dap_port`, `debug` (start/stop), `complete` requests,
-//! plot events (`plot_open`, `plot_update`, `plot_close`, `plot_render_reply`).
+//! plot events (`plot_open`, `plot_update`, `plot_close`, `plot_render_reply`),
+//! interactive output (`show_html_file`, `show_url`, `open_with_system`).
 //! IDE -> console: `execute` (code + optional file location), `complete_reply`,
 //! plot requests (`plot_render`, `plot_settings`, `plot_close`).
 

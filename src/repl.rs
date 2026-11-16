@@ -276,12 +276,11 @@ impl Repl {
         if let Some(path) = ide_socket {
             let ide = Ide::connect(path, repl.wake.clone())?;
             repl.ide = Some(ide.clone());
-            let plots = PlotRelay::new(Some(ide.clone()));
-            if let Some(ui) = &repl.ui_comm {
-                plots.set_ui_comm(ui);
-            }
-            repl.plots = Arc::new(plots);
+            repl.plots = Arc::new(PlotRelay::new(Some(ide.clone())));
             repl.open_debugger(&ide)?;
+        }
+        if let Some(ui) = &repl.ui_comm {
+            repl.plots.set_ui_comm(ui);
         }
 
         let backend = if let Some(ide) = &repl.ide {
@@ -541,6 +540,27 @@ impl Repl {
         }
     }
 
+    /// Standalone: interactive output (htmlwidgets, Shiny, files) goes to the
+    /// system's default browser or opener.
+    fn open_externally(&mut self, target: &str, title: &str) {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let ok = std::process::Command::new(opener)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        self.clear_prompt();
+        self.finish_line();
+        let note = if ok {
+            format!("[{title}: opened in your browser]")
+        } else {
+            format!("[{title}: open {target}]")
+        };
+        self.write(&note, Some(Color::DarkGray.normal()));
+        self.finish_line();
+    }
+
     fn remember(&mut self, code: &str) {
         if let Some(editor) = self.editor.as_mut() {
             let _ = editor.history_mut().save(HistoryItem::from_command_line(code));
@@ -637,6 +657,7 @@ impl Repl {
             PlotEvent::None => {},
             PlotEvent::Handled => return,
             PlotEvent::Image(png) => return self.show_image(&png),
+            PlotEvent::Open { target, title } => return self.open_externally(&target, &title),
         }
         let c = &msg.content;
         match msg.msg_type() {

@@ -39,6 +39,9 @@ pub enum PlotEvent {
     Handled,
     /// A plot to draw inline (base64 PNG).
     Image(String),
+    /// Interactive output (an htmlwidget file, a local web app URL, a file to
+    /// open) with no IDE to show it: hand it to the system browser/opener.
+    Open { target: String, title: String },
 }
 
 pub struct PlotRelay {
@@ -71,6 +74,7 @@ impl PlotRelay {
         let c = &msg.content;
         let comm_id = c["comm_id"].as_str().unwrap_or_default();
         match msg.msg_type() {
+            "comm_msg" if self.ui_comm.lock().unwrap().as_deref() == Some(comm_id) => self.handle_ui(&c["data"]),
             "comm_open" if c["target_name"] == PLOT_COMM_TARGET => {
                 self.comms.lock().unwrap().insert(comm_id.to_string());
                 self.announce("plot_open", comm_id, &c["data"]["pre_render"])
@@ -99,6 +103,32 @@ impl PlotRelay {
                 PlotEvent::Handled
             },
             _ => PlotEvent::None,
+        }
+    }
+
+    /// Interactive output from ark's UI comm: htmlwidgets (`show_html_file`),
+    /// web apps such as Shiny (`show_url`) and other files (`open_with_system`).
+    /// Other UI events (prompt, width, ...) are left to the REPL.
+    fn handle_ui(&self, data: &Value) -> PlotEvent {
+        let params = &data["params"];
+        let (target, title) = match data["method"].as_str() {
+            Some("show_html_file") => (&params["path"], params["title"].as_str().unwrap_or("R")),
+            Some("show_url") => (&params["url"], "R"),
+            Some("open_with_system") => (&params["path"], "R"),
+            _ => return PlotEvent::None,
+        };
+        let Some(target) = target.as_str() else {
+            return PlotEvent::Handled;
+        };
+        match &self.ide {
+            Some(ide) => {
+                ide.send(json!({ "type": data["method"], "params": params }));
+                PlotEvent::Handled
+            },
+            None => PlotEvent::Open {
+                target: target.to_string(),
+                title: title.to_string(),
+            },
         }
     }
 
