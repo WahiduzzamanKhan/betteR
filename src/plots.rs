@@ -191,10 +191,10 @@ pub enum ImageProtocol {
     Kitty,
 }
 
-/// `BETTERR_INLINE_IMAGES=iterm|kitty|none` overrides detection.
+/// `BETTER_INLINE_IMAGES=iterm|kitty|none` overrides detection.
 pub fn detect_image_protocol() -> Option<ImageProtocol> {
     let var = |k: &str| std::env::var(k).unwrap_or_default();
-    match var("BETTERR_INLINE_IMAGES").as_str() {
+    match var("BETTER_INLINE_IMAGES").as_str() {
         "iterm" => return Some(ImageProtocol::Iterm),
         "kitty" => return Some(ImageProtocol::Kitty),
         "none" => return None,

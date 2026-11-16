@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::ide::Ide;
 
-const DOC_URI: &str = "untitled:betterr-console";
+const DOC_URI: &str = "untitled:better-console";
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct LspClient {

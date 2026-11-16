@@ -534,7 +534,7 @@ impl Repl {
             },
             None => {
                 let hint = "[plot: this terminal can't show images; use iTerm2, WezTerm or kitty, \
-                            set BETTERR_INLINE_IMAGES, or the VS Code extension's plot pane]";
+                            set BETTER_INLINE_IMAGES, or the VS Code extension's plot pane]";
                 self.write(hint, Some(Color::DarkGray.normal()));
                 self.finish_line();
             },
@@ -880,10 +880,10 @@ fn terminal_width() -> u16 {
 }
 
 fn history_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("BETTERR_HISTORY") {
+    if let Some(path) = std::env::var_os("BETTER_HISTORY") {
         return Some(PathBuf::from(path));
     }
-    let dir = dirs::data_dir()?.join("betterr");
+    let dir = dirs::data_dir()?.join("better");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("history.txt"))
 }

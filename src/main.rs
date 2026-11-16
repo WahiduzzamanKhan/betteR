@@ -1,4 +1,4 @@
-//! betterR console: a terminal R console that drives an `ark` kernel over
+//! betteR console: a terminal R console that drives an `ark` kernel over
 //! Jupyter, with tree-sitter highlighting and LSP-backed completion.
 
 mod highlight;
@@ -21,10 +21,10 @@ use crate::jupyter::{ConnectionInfo, KernelClient};
 use crate::repl::{Origin, Repl};
 
 const USAGE: &str = "\
-betterr — modern R console backed by ark
+better — modern R console backed by ark
 
 USAGE:
-    betterr [OPTIONS]
+    better [OPTIONS]
 
 OPTIONS:
     -f, --connection-file <PATH>  Attach to a running kernel instead of starting one
@@ -36,7 +36,7 @@ OPTIONS:
     -h, --help                    Show this help
     -V, --version                 Show version
 
-Piped stdin (e.g. `echo 'summary(mtcars)' | betterr`) runs the input and exits.";
+Piped stdin (e.g. `echo 'summary(mtcars)' | better`) runs the input and exits.";
 
 struct Args {
     connection_file: Option<PathBuf>,
@@ -71,7 +71,7 @@ fn parse_args() -> Result<Option<Args>> {
                 return Ok(None);
             },
             "-V" | "--version" => {
-                println!("betterr {}", env!("CARGO_PKG_VERSION"));
+                println!("better {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             },
             other => bail!("unknown argument `{other}`\n\n{USAGE}"),
@@ -84,7 +84,7 @@ fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
         Err(err) => {
-            eprintln!("betterr: {err:#}");
+            eprintln!("better: {err:#}");
             std::process::exit(1);
         },
     }

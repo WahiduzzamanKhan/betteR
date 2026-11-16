@@ -91,7 +91,7 @@ fn free_port() -> Result<u16> {
 }
 
 pub fn spawn(ark: &Path, log_file: Option<PathBuf>) -> Result<(SpawnedKernel, ConnectionInfo)> {
-    let dir = std::env::temp_dir().join(format!("betterr-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("better-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
     let info = ConnectionInfo {

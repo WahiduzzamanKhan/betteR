@@ -1,6 +1,6 @@
-"""Phase 1 interactive smoke test: drives the real `betterr` binary in a PTY.
+"""Phase 1 interactive smoke test: drives the real `better` binary in a PTY.
 
-Usage: .venv/bin/python console/tests/pty_smoke.py [path/to/betterr]
+Usage: .venv/bin/python console/tests/pty_smoke.py [path/to/better]
 """
 
 import os
@@ -13,7 +13,7 @@ from pathlib import Path
 import pexpect
 
 ROOT = Path(__file__).resolve().parents[2]
-BIN = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "console/target/debug/betterr")
+BIN = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "console/target/debug/better")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]|\r")
 
 # Reedline enables bracketed paste each time it starts reading a line.
@@ -28,8 +28,8 @@ class Term:
     """pexpect wrapper that answers cursor-position queries (reedline sends them)."""
 
     def __init__(self):
-        env = dict(os.environ, BETTERR_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"),
-                   BETTERR_INLINE_IMAGES="iterm")
+        env = dict(os.environ, BETTER_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"),
+                   BETTER_INLINE_IMAGES="iterm")
         self.p = pexpect.spawn(BIN, dimensions=(40, 120), encoding="utf-8", timeout=30, env=env)
         self.raw = ""
 

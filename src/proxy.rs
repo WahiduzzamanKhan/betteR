@@ -1,4 +1,4 @@
-//! `betterr --lsp-stdio -f kernel.json`: bridges an editor's stdio LSP client
+//! `better --lsp-stdio -f kernel.json`: bridges an editor's stdio LSP client
 //! to the LSP server of a running ark kernel. Lets the VS Code extension talk
 //! to ark's live-session LSP without needing a ZeroMQ client of its own.
 

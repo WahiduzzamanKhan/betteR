@@ -1,4 +1,4 @@
-# betterr: terminal R console (Phases 1, 3 and 4)
+# better: terminal R console (Phases 1, 3 and 4)
 
 A Rust R console that runs in any terminal and drives a single **ark** R session over Jupyter. Highlighting comes from tree-sitter-r. Completion comes from ark's LSP, the same engine the VS Code editor will use in Phase 2. Nothing is installed into the R library.
 
@@ -7,17 +7,17 @@ A Rust R console that runs in any terminal and drives a single **ark** R session
 ```sh
 export PATH=/opt/homebrew/opt/rustup/bin:$PATH     # Homebrew rustup is keg-only
 cd console && cargo build
-./target/debug/betterr                              # start a new ark session
-./target/debug/betterr -f /path/to/kernel.json      # attach to a running kernel (Phase 2)
-./target/debug/betterr --lsp-stdio -f kernel.json   # bridge ark's LSP to stdio (used by the VS Code extension)
-./target/debug/betterr -f kernel.json --ide-socket ide.sock   # hosted by the VS Code extension (Run Selection, debugger, completion)
-echo 'summary(mtcars)' | ./target/debug/betterr     # piped: run and exit (exit 1 on R error)
+./target/debug/better                              # start a new ark session
+./target/debug/better -f /path/to/kernel.json      # attach to a running kernel (Phase 2)
+./target/debug/better --lsp-stdio -f kernel.json   # bridge ark's LSP to stdio (used by the VS Code extension)
+./target/debug/better -f kernel.json --ide-socket ide.sock   # hosted by the VS Code extension (Run Selection, debugger, completion)
+echo 'summary(mtcars)' | ./target/debug/better     # piped: run and exit (exit 1 on R error)
 
 cargo test                                          # unit tests
 ../.venv/bin/python tests/pty_smoke.py              # 15 end-to-end checks in a real PTY
 ```
 
-`betterr` looks for ark in this order: `--ark <path>`, then `$ARK_PATH`, then `ark` on `PATH`, then `../vendor/ark/target/{release,debug}/ark`.
+`better` looks for ark in this order: `--ark <path>`, then `$ARK_PATH`, then `ark` on `PATH`, then `../vendor/ark/target/{release,debug}/ark`.
 
 ## What works
 
@@ -30,10 +30,10 @@ cargo test                                          # unit tests
 | `browser()` / `debug()` | The prompt switches to `Browse[N]>`. An empty line steps, as in R. |
 | Ctrl-C interrupts running code | `interrupt_request` on control. The rest of the input is not run (see the ark findings below). |
 | stdout / stderr / errors / warnings | stderr is shown in red; error tracebacks are shown when they have more than one frame |
-| History, fish-style hints, Alt-Enter newline, bracketed paste, reverse-i-search | reedline (history in `~/Library/Application Support/betterr/history.txt`, or `$BETTERR_HISTORY`) |
+| History, fish-style hints, Alt-Enter newline, bracketed paste, reverse-i-search | reedline (history in `~/Library/Application Support/better/history.txt`, or `$BETTER_HISTORY`) |
 | `options(width)` follows the terminal width | Set at startup and updated on resize, through the UI comm |
 | Attach mode (`-f`) | Shares state with the other client in both directions. Detaching leaves the kernel running; a session the console spawned is shut down on exit. |
-| Plots | Drawn inline in terminals with an image protocol: iTerm2 and WezTerm (OSC 1337), and kitty. Override detection with `BETTERR_INLINE_IMAGES=iterm|kitty|none`; VS Code's terminal works with `iterm` if `terminal.integrated.enableImages` is on. Otherwise a one-line hint is printed. When hosted by the extension, plots go to its *R Plots* pane instead. |
+| Plots | Drawn inline in terminals with an image protocol: iTerm2 and WezTerm (OSC 1337), and kitty. Override detection with `BETTER_INLINE_IMAGES=iterm|kitty|none`; VS Code's terminal works with `iterm` if `terminal.integrated.enableImages` is on. Otherwise a one-line hint is printed. When hosted by the extension, plots go to its *R Plots* pane instead. |
 | Crash handling | Heartbeat plus child-process monitoring. On a crash it reports the error, exits 1 and keeps the ark log. |
 
 ## Ark protocol findings from Phase 1
@@ -65,5 +65,5 @@ Watching IOPub from a reedline *idle callback* would make reedline re-query the 
 - No signature or help popups in the console yet (ark offers `signatureHelp` and `hover`).
 - The completion menu has no descriptions. They would force a single column; an `IdeMenu` popup could add them back.
 - Password `input_request`s use a minimal no-echo reader.
-- If the terminal is hung up (tab closed), ark exits with it, but the temp dir (`$TMPDIR/betterr-<pid>`) is left behind.
+- If the terminal is hung up (tab closed), ark exits with it, but the temp dir (`$TMPDIR/better-<pid>`) is left behind.
 - Ark log: removed after a clean exit, kept after a crash, and kept whenever `--log` is passed.
