@@ -23,13 +23,20 @@ BROWSE = (READY, r"Browse\[1\]> ")
 
 results = {}
 
+# Records what the console asks the browser to open, instead of opening it.
+OPENED = os.path.join(tempfile.mkdtemp(), "opened.txt")
+FAKE_BROWSER = os.path.join(os.path.dirname(OPENED), "browser")
+with open(FAKE_BROWSER, "w") as f:
+    f.write(f'#!/bin/sh\necho "$1" >> {OPENED}\n')
+os.chmod(FAKE_BROWSER, 0o755)
+
 
 class Term:
     """pexpect wrapper that answers cursor-position queries (reedline sends them)."""
 
     def __init__(self):
         env = dict(os.environ, BETTER_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"),
-                   BETTER_INLINE_IMAGES="iterm")
+                   BETTER_INLINE_IMAGES="iterm", BROWSER=FAKE_BROWSER)
         self.p = pexpect.spawn(BIN, dimensions=(40, 120), encoding="utf-8", timeout=30, env=env)
         self.raw = ""
 
@@ -113,6 +120,10 @@ ok, out = t.run("z", until=BROWSE)
 check("browser() evaluates in frame", ok and "[1] 5" in out, out)
 ok, out = t.run("c")
 check("browser() continue returns to top level", ok and "[1] 10" in out, out)
+
+ok, out = t.run("?mean")
+opened = open(OPENED).read() if os.path.exists(OPENED) else ""
+check("?mean opens the R help page in the browser", ok and "/library/base/html/mean.html" in opened, opened)
 
 ok, out = t.run("plot(1:3)")
 check("plot drawn inline (iTerm2 image protocol)", ok and "\x1b]1337;File=inline=1" in t.raw, out[-200:])
