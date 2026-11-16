@@ -540,10 +540,11 @@ impl Repl {
         }
     }
 
-    /// Standalone: interactive output (htmlwidgets, Shiny, files) goes to the
-    /// system's default browser or opener.
+    /// Standalone: interactive output (htmlwidgets, Shiny, files) goes to
+    /// `$BROWSER`, or the system's default opener.
     fn open_externally(&mut self, target: &str, title: &str) {
-        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let default = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let opener = std::env::var("BROWSER").ok().filter(|b| !b.is_empty()).unwrap_or(default.into());
         let ok = std::process::Command::new(opener)
             .arg(target)
             .stdout(std::process::Stdio::null())
