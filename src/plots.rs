@@ -12,6 +12,7 @@ use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
 
 pub const PLOT_COMM_TARGET: &str = "positron.plot";
+pub const HELP_COMM_TARGET: &str = "positron.help";
 
 /// ark sends plot updates as unpadded base64; strict decoders (terminals,
 /// `atob`) want the padding.
@@ -47,6 +48,9 @@ pub enum PlotEvent {
 pub struct PlotRelay {
     ide: Option<Arc<Ide>>,
     ui_comm: Mutex<Option<String>>,
+    help_comm: Mutex<Option<String>>,
+    /// Jupyter `msg_id` of a help-topic lookup -> the IDE's request id.
+    pending_help: Mutex<HashMap<String, Value>>,
     comms: Mutex<HashSet<String>>,
     /// Jupyter `msg_id` of a render request -> the IDE's request id.
     pending: Mutex<HashMap<String, Value>>,
@@ -57,6 +61,8 @@ impl PlotRelay {
         Self {
             ide,
             ui_comm: Mutex::new(None),
+            help_comm: Mutex::new(None),
+            pending_help: Mutex::new(HashMap::new()),
             comms: Mutex::new(HashSet::new()),
             pending: Mutex::new(HashMap::new()),
         }
@@ -70,11 +76,16 @@ impl PlotRelay {
         *self.ui_comm.lock().unwrap() = Some(comm_id.to_string());
     }
 
+    pub fn set_help_comm(&self, comm_id: &str) {
+        *self.help_comm.lock().unwrap() = Some(comm_id.to_string());
+    }
+
     pub fn handle(&self, msg: &Message) -> PlotEvent {
         let c = &msg.content;
         let comm_id = c["comm_id"].as_str().unwrap_or_default();
         match msg.msg_type() {
             "comm_msg" if self.ui_comm.lock().unwrap().as_deref() == Some(comm_id) => self.handle_ui(&c["data"]),
+            "comm_msg" if self.help_comm.lock().unwrap().as_deref() == Some(comm_id) => self.handle_help(msg),
             "comm_open" if c["target_name"] == PLOT_COMM_TARGET => {
                 self.comms.lock().unwrap().insert(comm_id.to_string());
                 self.announce("plot_open", comm_id, &c["data"]["pre_render"])
@@ -129,6 +140,33 @@ impl PlotRelay {
                 target: target.to_string(),
                 title: title.to_string(),
             },
+        }
+    }
+
+    /// Help pages (`?topic`, `help()`, `??search`): `show_help` events carry a
+    /// URL on ark's local help proxy. Also replies to IDE topic lookups.
+    fn handle_help(&self, msg: &Message) -> PlotEvent {
+        let data = &msg.content["data"];
+        let request = msg.parent_id().and_then(|p| self.pending_help.lock().unwrap().remove(p));
+        if let (Some(id), Some(ide)) = (request, &self.ide) {
+            let found = data["result"].as_bool().unwrap_or(false);
+            ide.send(json!({ "type": "help_topic_reply", "id": id, "found": found }));
+            return PlotEvent::Handled;
+        }
+        if data["method"] != "show_help" {
+            return PlotEvent::Handled;
+        }
+        let params = &data["params"];
+        match (&self.ide, params["content"].as_str()) {
+            (Some(ide), _) => {
+                ide.send(json!({ "type": "show_help", "params": params }));
+                PlotEvent::Handled
+            },
+            (None, Some(url)) if params["kind"] == "url" => PlotEvent::Open {
+                target: url.to_string(),
+                title: "R help".into(),
+            },
+            _ => PlotEvent::Handled,
         }
     }
 
@@ -200,6 +238,23 @@ impl PlotRelay {
                                 },
                             }),
                         );
+                    }
+                },
+                // Help for a topic (e.g. F1 in the editor); ark replies with
+                // whether it was found and, if so, sends `show_help`.
+                Some("help_topic") => {
+                    let Some(help) = self.help_comm.lock().unwrap().clone() else {
+                        ide.send(json!({ "type": "help_topic_reply", "id": req["id"], "found": false }));
+                        continue;
+                    };
+                    let data = json!({
+                        "jsonrpc": "2.0",
+                        "id": req["id"].to_string(),
+                        "method": "show_help_topic",
+                        "params": { "topic": req["topic"] },
+                    });
+                    if let Ok(msg_id) = client.send(Channel::Shell, "comm_msg", json!({ "comm_id": help, "data": data })) {
+                        self.pending_help.lock().unwrap().insert(msg_id, req["id"].clone());
                     }
                 },
                 // The IDE dropped the plot from its history: free ark's recording.

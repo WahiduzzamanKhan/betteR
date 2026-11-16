@@ -22,7 +22,7 @@ use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
 use crate::kernel::SpawnedKernel;
 use crate::lsp::{CompletionBackend, LspClient, LspCompleter};
-use crate::plots::{detect_image_protocol, inline_image, ImageProtocol, PlotEvent, PlotRelay};
+use crate::plots::{detect_image_protocol, inline_image, ImageProtocol, PlotEvent, PlotRelay, HELP_COMM_TARGET};
 
 const UI_COMM_TARGET: &str = "positron.ui";
 
@@ -282,6 +282,10 @@ impl Repl {
         if let Some(ui) = &repl.ui_comm {
             repl.plots.set_ui_comm(ui);
         }
+        // Opening the help comm starts R's help server and ark's help proxy;
+        // help pages then arrive as `show_help` events.
+        let help = repl.client.lock().unwrap().open_comm(HELP_COMM_TARGET, json!({}))?;
+        repl.plots.set_help_comm(&help);
 
         let backend = if let Some(ide) = &repl.ide {
             // Hosted: the IDE owns the kernel's one LSP connection.
@@ -540,7 +544,7 @@ impl Repl {
         }
     }
 
-    /// Standalone: interactive output (htmlwidgets, Shiny, files) goes to
+    /// Standalone: interactive output (htmlwidgets, Shiny, help, files) goes to
     /// `$BROWSER`, or the system's default opener.
     fn open_externally(&mut self, target: &str, title: &str) {
         let default = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };

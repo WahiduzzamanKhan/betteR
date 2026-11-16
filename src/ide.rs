@@ -3,9 +3,10 @@
 //!
 //! Console -> IDE: `dap_port`, `debug` (start/stop), `complete` requests,
 //! plot events (`plot_open`, `plot_update`, `plot_close`, `plot_render_reply`),
-//! interactive output (`show_html_file`, `show_url`, `open_with_system`).
+//! interactive output (`show_html_file`, `show_url`, `open_with_system`),
+//! help (`show_help`, `help_topic_reply`).
 //! IDE -> console: `execute` (code + optional file location), `complete_reply`,
-//! plot requests (`plot_render`, `plot_settings`, `plot_close`).
+//! plot requests (`plot_render`, `plot_settings`, `plot_close`), `help_topic`.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -52,7 +53,7 @@ impl Ide {
                     if let Some(tx) = msg["id"].as_u64().and_then(|id| ide.pending.lock().unwrap().remove(&id)) {
                         let _ = tx.send(msg["items"].clone());
                     }
-                } else if msg["type"].as_str().is_some_and(|t| t.starts_with("plot_")) {
+                } else if msg["type"].as_str().is_some_and(|t| t.starts_with("plot_") || t.starts_with("help_")) {
                     ide.plot_requests.lock().unwrap().push_back(msg);
                 } else {
                     ide.inbox.lock().unwrap().push_back(msg);
