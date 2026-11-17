@@ -1,74 +1,169 @@
-# betteR: terminal R console
+# betteR
 
-The VS Code extension that hosts it lives in the sibling repo [vs_code_betteR](../vs_code_betteR).
+**A modern R console for your terminal. One binary, no R packages.**
 
-**One binary.** [ark](https://github.com/posit-dev/ark) (MIT) is built into `better`, pinned to one upstream commit in `Cargo.toml`. The only other requirement is an R installation; nothing is installed into the R library.
+betteR (the command is `better`) gives R the console experience that RStudio and Positron users take for granted, in any terminal: syntax highlighting as you type, completion from your live session, a real line editor, `browser()` debugging, plots and help. It doesn't install anything into your R library, so your `renv.lock` stays clean.
 
-A Rust R console that runs in any terminal and drives a single **ark** R session over Jupyter. Highlighting comes from tree-sitter-r. Completion comes from ark's LSP, the same engine the VS Code editor will use in Phase 2. Nothing is installed into the R library.
-
-## Build, run, test
-
-```sh
-export PATH=/opt/homebrew/opt/rustup/bin:$PATH     # Homebrew rustup is keg-only
-cargo build
-./target/debug/better                              # start a new ark session
-./target/debug/better -f /path/to/kernel.json      # attach to a running kernel (Phase 2)
-./target/debug/better --lsp-stdio -f kernel.json   # bridge ark's LSP to stdio (used by the VS Code extension)
-./target/debug/better -f kernel.json --ide-socket ide.sock   # hosted by the VS Code extension (Run Selection, debugger, completion)
-echo 'summary(mtcars)' | ./target/debug/better     # piped: run and exit (exit 1 on R error)
-
-cargo test                                          # unit tests
-uv run --with pexpect python tests/pty_smoke.py     # end-to-end checks in a real PTY
+```text
+> y <- mtcars
+> y$c⇥
+cyl   carb
+> summary(y$mpg)
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+  10.40   15.43   19.20   20.09   22.80   33.90
 ```
 
-`better` runs its R session by launching itself in kernel mode (`better --kernel`, the same code as ark's own binary). To try a different ark build instead, pass `--ark <path>`. A release build (`cargo build --release`) is about 31 MB.
+## Features
 
-## What works
+- **Syntax highlighting** while you type.
+- **Tab completion from your live session**: data frame columns after `$`, functions you've defined, packages, arguments and file paths.
+- **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Alt-Enter inserts a newline.
+- **History** with fish-style suggestions as you type, Ctrl-R reverse search and bracketed paste.
+- **`browser()` and `debug()`** with a `Browse[1]>` prompt. Enter steps, as in R.
+- **`readline()` and `menu()`** prompts.
+- **Ctrl-C** stops running code without losing your session.
+- **Plots drawn inline** in terminals that support images (iTerm2, WezTerm, kitty).
+- **Help pages, htmlwidgets (plotly, leaflet, DT…) and Shiny apps** open in your browser.
+- **Scripting:** pipe code in (`echo 'summary(mtcars)' | better`), with exit code 1 on an R error.
+- **Nothing installed into R.** No `languageserver`, `httpgd` or other helper packages.
 
-| Feature | How |
+betteR also powers **betteR for VS Code** (the `vs_code_betteR` repository). The extension runs the same console in VS Code's terminal and shares its R session with the editor, debugger, plot pane and help panel.
+
+## How it works
+
+betteR is built on [ark](https://github.com/posit-dev/ark), Posit's open-source R kernel (MIT), which is also the engine behind Positron. ark is compiled into the `better` binary, so the only thing you need besides `better` is R. Design notes are in [docs/design.md](docs/design.md).
+
+## Requirements
+
+- **R**, installed normally. Tested with R 4.3 and 4.6.
+- **macOS or Linux.** Windows is not supported yet. betteR has been tested on macOS.
+- **To build from source:** Rust 1.95 or newer (from [rustup](https://rustup.rs)), Git, and a C compiler (on macOS, the Xcode Command Line Tools: `xcode-select --install`).
+
+## Installation
+
+There are no prebuilt binaries yet, so install from source:
+
+```sh
+git clone <this repository> betteR
+cd betteR
+cargo install --path .
+```
+
+This builds an optimised `better` (about 31 MB) and installs it into `~/.cargo/bin`. A first build downloads and compiles all dependencies, including ark, and takes a few minutes.
+
+Make sure `~/.cargo/bin` is on your `PATH`. The official rustup installer sets this up; with Homebrew's `rustup`, add it to `~/.zshrc`:
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Check that it works:
+
+```sh
+better --version
+echo 'R.version.string' | better
+```
+
+To update later, pull the latest changes and run `cargo install --path .` again. To uninstall, run `cargo uninstall better`.
+
+## Usage
+
+Start the console:
+
+```sh
+better
+```
+
+It starts a new R session in the current directory. Quit with **Ctrl-D** or `q()`.
+
+### Keys
+
+| Key | Action |
 |---|---|
-| Syntax highlighting while typing | tree-sitter-r `HIGHLIGHTS_QUERY`. For overlapping matches, the innermost node wins; for the same node, the later pattern wins. Parse errors are not painted. |
-| Tab completion from the live session (`y$` columns, session-defined functions, packages, files) | Ark LSP `textDocument/completion` against a virtual `untitled:` document that mirrors the input buffer. Functions insert `name(`. |
-| Multi-line input with `+ ` continuation | reedline `Validator` → Jupyter `is_complete_request` (R's own parser decides) |
-| `readline()` / `menu()` | Jupyter `input_request` on stdin. Shell and stdin share one ZeroMQ identity so ark routes input requests to us. |
-| `browser()` / `debug()` | The prompt switches to `Browse[N]>`. An empty line steps, as in R. |
-| Ctrl-C interrupts running code | `interrupt_request` on control. The rest of the input is not run (see the ark findings below). |
-| stdout / stderr / errors / warnings | stderr is shown in red; error tracebacks are shown when they have more than one frame |
-| History, fish-style hints, Alt-Enter newline, bracketed paste, reverse-i-search | reedline (history in `~/Library/Application Support/better/history.txt`, or `$BETTER_HISTORY`) |
-| `options(width)` follows the terminal width | Set at startup and updated on resize, through the UI comm |
-| Attach mode (`-f`) | Shares state with the other client in both directions. Detaching leaves the kernel running; a session the console spawned is shut down on exit. |
-| Plots | Drawn inline in terminals with an image protocol: iTerm2 and WezTerm (OSC 1337), and kitty. Override detection with `BETTER_INLINE_IMAGES=iterm|kitty|none`; VS Code's terminal works with `iterm` if `terminal.integrated.enableImages` is on. Otherwise a one-line hint is printed. When hosted by the extension, plots go to its *R Plots* pane instead. |
-| Interactive output (htmlwidgets such as plotly, leaflet and DT; Shiny apps; `viewer` output) and help pages (`?topic`, `??search`) | Opened in `$BROWSER`, or your default browser. When hosted by the extension, shown in its *R Plots* / *R Viewer* / *R Help* panels instead. |
-| Crash handling | Heartbeat plus child-process monitoring. On a crash it reports the error, exits 1 and keeps the ark log. |
+| **Tab** / **Shift-Tab** | Open the completion menu and move through it |
+| **Enter** | Run the input, or start a new line if it isn't complete yet |
+| **Alt-Enter** | Insert a newline without running |
+| **→** (at end of line) | Accept the grey suggestion from history |
+| **↑** / **↓** | Previous / next history entry |
+| **Ctrl-R** | Search history |
+| **Ctrl-C** | Interrupt running code, or clear the current line |
+| **Ctrl-D** | Quit (on an empty line) |
 
-## Ark protocol findings from Phase 1
+### Things to try
 
-1. **Jupyter `complete_request` is a stub** (as found in Phase 0), so completion goes through the LSP. **Two LSP clients on one kernel work for completion.** Ark keeps one "console inputs" channel, and the newest LSP connection takes it over, but completion queries the live session directly. Tested: both clients see new objects, including after one disconnects. When hosted by the extension (Phase 3), the console still uses the extension's LSP client so the editor gets the console channel; see below.
-2. **The prompt is only reported through the `positron.ui` comm** (`prompt_state` event). The console opens this comm only to track `Browse[N]>` and to set the console width. It's an ordinary Jupyter comm and needs no Positron UI.
-3. **Frontend RPCs block R.** With the UI comm open, R functions that call the frontend (for example `View()` and `rstudioapi` shims) send `rpc_request` on stdin and wait for an answer. The console replies with a JSON-RPC "method not found" error so R never hangs.
-4. **Interrupts don't cancel queued expressions.** If you Ctrl-C `Sys.sleep(30); save()`, ark still runs `save()`. The console works around this by splitting input into top-level expressions with tree-sitter and sending them one at a time, stopping on interrupt or error, like R's own console. Input that doesn't parse is sent whole so R reports the syntax error. This deserves an upstream ark fix.
-5. **Plots.** Without the UI comm, ark sends static `display_data` PNGs. With it, which is how the console runs, every plot is a `positron.plot` comm: a `comm_open` with a 640×400 PNG `pre_render`, then `update` events (for example after `lines()`), and `render` requests at any size and format. `dev.off()` doesn't close plot comms, so history survives. Update payloads come as unpadded base64; the console pads them before passing them on.
+```r
+y <- mtcars              # then type  y$  and press Tab
+f <- function(x) {       # Enter continues on the next line
+  x * 2
+}
+g <- function() { z <- 5; browser(); z * 2 }
+g()                      # Browse[1]> prompt: type z, press Enter to step, c to continue
+name <- readline("Name? ")
+Sys.sleep(30)            # then Ctrl-C
+plot(1:10)               # drawn inline in iTerm2, WezTerm or kitty
+?mean                    # opens the help page in your browser
+```
 
-## Hosted mode and ark debugger findings (Phase 3)
+### Plots, help and interactive output
 
-With `--ide-socket`, the console connects to its host IDE over JSON lines on a Unix socket, and:
+- **Plots** are drawn inline in terminals with an image protocol: iTerm2, WezTerm and kitty. Elsewhere, `better` prints a short note instead. To force a protocol, set `BETTER_INLINE_IMAGES=iterm` or `kitty`, or `none` to turn images off. VS Code's integrated terminal can show them with `BETTER_INLINE_IMAGES=iterm` and the setting `terminal.integrated.enableImages` turned on.
+- **Help pages** (`?mean`, `help("lm")`, `??regression`), **htmlwidgets** (plotly, leaflet, DT, …) and **Shiny apps** open in your default browser, or in the program named by `$BROWSER`.
 
-- **It opens ark's `ark_dap` comm and reports the DAP port.** The comm holder is the frontend ark asks to run debugger commands. A Step clicked in the IDE arrives as a comm `execute {command: "n"}`. A background thread watches IOPub while the line editor waits, and raises reedline's break signal so the command is echoed (`Browse[1]> n`) and run as if typed.
-- **It runs IDE `execute` requests** with `positron.code_location`. Each top-level expression gets its own location shifted into the file, using tree-sitter byte positions, and is echoed at its own prompt. Half-typed input survives because reedline keeps its buffer across a break.
-- **It forwards ark's `start_debug` / `stop_debug` hints**, which the extension uses to attach or detach VS Code's debugger.
-- **It completes through the IDE's language client** instead of its own LSP, so ark keeps a single LSP client. Ark only sends console scopes and `ark:` virtual documents to its newest LSP connection.
+### Command-line options
 
-Ark findings:
-1. **Every step emits `stop_debug` then `start_debug`.** Treating `stop_debug` as "done" and disconnecting makes ark inject `Q`.
-2. **Attaching a DAP client while R is already paused doesn't produce a `stopped` event.**
-3. **Functions without a file srcref are served as `ark:ark-<pid>/debug/...` virtual documents**, through the LSP request `ark/internal/virtualDocument {path}`.
+```text
+better [OPTIONS]
 
-Watching IOPub from a reedline *idle callback* would make reedline re-query the cursor position on every repaint, and leave raw mode on while it waits for the answer. That's why it's a separate thread that only `try_lock`s the client.
+  -f, --connection-file <PATH>  Attach to a running R session instead of starting one
+      --log <PATH>              Keep the R session's log at this path
+      --no-lsp                  Turn off completion
+      --ark <PATH>              Use a separate ark build instead of the built-in one
+  -h, --help                    Show help
+  -V, --version                 Show the version
+```
 
-## Known limitations / next steps
+`--kernel`, `--lsp-stdio` and `--ide-socket` are used internally by the VS Code extension.
 
-- No signature or help popups in the console yet (ark offers `signatureHelp` and `hover`).
-- The completion menu has no descriptions. They would force a single column; an `IdeMenu` popup could add them back.
-- Password `input_request`s use a minimal no-echo reader.
-- If the terminal is hung up (tab closed), ark exits with it, but the temp dir (`$TMPDIR/better-<pid>`) is left behind.
-- Ark log: removed after a clean exit, kept after a crash, and kept whenever `--log` is passed.
+**Running scripts:** if input is piped in, `better` runs it and exits. It stops at the first error and exits with code 1:
+
+```sh
+echo 'summary(mtcars)' | better
+better < analysis.R
+```
+
+**Attaching to a session:** `better -f kernel.json` connects to an R session that is already running, for example one started by the VS Code extension. Both clients see the same variables. Quitting the console leaves that session running.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `BETTER_INLINE_IMAGES` | `iterm`, `kitty` or `none`: overrides inline-image detection |
+| `BETTER_HISTORY` | History file (default: `~/Library/Application Support/better/history.txt` on macOS, `~/.local/share/better/history.txt` on Linux) |
+| `BROWSER` | Program used to open help pages, htmlwidgets and apps |
+| `R_HOME` | Which R installation to use (default: the `R` on your `PATH`) |
+
+## Troubleshooting
+
+- **"R session ended abnormally"**: R crashed. The message gives the path of the session log, which is kept for diagnosis.
+- **Plots show as a note instead of an image**: your terminal doesn't support inline images. Use one that does, or set `BETTER_INLINE_IMAGES`.
+- **"Can't find R"**: make sure `R` runs from the same shell. betteR uses `$R_HOME` if set, otherwise the `R` on your `PATH`. Set `R_HOME` to choose a specific R installation.
+
+## Limitations
+
+- No signature or help pop-ups while typing yet.
+- Completion menu entries show names only, without descriptions.
+- If the terminal tab is closed while R is running, R stops correctly but a small folder is left in `$TMPDIR`.
+
+## Development
+
+```sh
+cargo build                                        # debug build in target/debug/better
+cargo test                                         # unit tests
+uv run --with pexpect python tests/pty_smoke.py    # end-to-end tests in a real terminal
+```
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org). For how the console works with ark, see [docs/design.md](docs/design.md).
+
+## Credits
+
+betteR is built on [ark](https://github.com/posit-dev/ark) by Posit Software, PBC (MIT licence), [reedline](https://github.com/nushell/reedline) and [tree-sitter-r](https://github.com/r-lib/tree-sitter-r).
