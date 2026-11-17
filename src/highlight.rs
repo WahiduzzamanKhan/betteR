@@ -4,7 +4,8 @@ use std::sync::Mutex;
 
 use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
-use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{Parser, Query, QueryCursor};
 
 pub struct RHighlighter {
     parser: Mutex<Parser>,
@@ -53,7 +54,7 @@ impl RHighlighter {
         let mut cursor = QueryCursor::new();
         let mut captures = cursor.captures(&self.query, tree.root_node(), line.as_bytes());
         while let Some((m, idx)) = captures.next() {
-            let cap = m.captures()[*idx];
+            let cap = m.captures[*idx];
             let range = cap.node.byte_range();
             let len = range.len();
             for slot in &mut out[range] {

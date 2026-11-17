@@ -59,38 +59,39 @@ impl Drop for SpawnedKernel {
     }
 }
 
-/// Resolves the ark binary: explicit flag, `$ARK_PATH`, `ark` on `PATH`, then
-/// a development build in a sibling `betteR_mvp/vendor/ark` checkout.
-pub fn find_ark(explicit: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(p) = explicit.or_else(|| std::env::var_os("ARK_PATH").map(PathBuf::from)) {
-        if p.is_file() {
-            return Ok(p);
-        }
-        bail!("ark binary not found at {}", p.display());
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            let candidate = dir.join("ark");
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
+/// The program that runs the R kernel: by default this very binary in
+/// `--kernel` mode (ark is built in); `--ark <path>` uses a separate ark build.
+pub enum KernelProgram {
+    BuiltIn,
+    External(PathBuf),
+}
+
+impl KernelProgram {
+    pub fn from_flag(ark: Option<PathBuf>) -> Result<Self> {
+        match ark {
+            None => Ok(Self::BuiltIn),
+            Some(p) if p.is_file() => Ok(Self::External(p)),
+            Some(p) => bail!("ark binary not found at {}", p.display()),
         }
     }
-    let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("../betteR_mvp/vendor/ark/target");
-    for profile in ["release", "debug"] {
-        let candidate = vendor.join(profile).join("ark");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
+
+    fn command(&self) -> Result<Command> {
+        Ok(match self {
+            Self::BuiltIn => {
+                let mut cmd = Command::new(std::env::current_exe().context("locating the better binary")?);
+                cmd.arg("--kernel");
+                cmd
+            },
+            Self::External(path) => Command::new(path),
+        })
     }
-    bail!("could not find `ark`; pass --ark <path> or set ARK_PATH")
 }
 
 fn free_port() -> Result<u16> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
-pub fn spawn(ark: &Path, log_file: Option<PathBuf>) -> Result<(SpawnedKernel, ConnectionInfo)> {
+pub fn spawn(program: &KernelProgram, log_file: Option<PathBuf>) -> Result<(SpawnedKernel, ConnectionInfo)> {
     let dir = std::env::temp_dir().join(format!("better-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
@@ -111,7 +112,8 @@ pub fn spawn(ark: &Path, log_file: Option<PathBuf>) -> Result<(SpawnedKernel, Co
     let auto_log = log_file.is_none();
     let log_file = log_file.unwrap_or_else(|| dir.join("ark.log"));
 
-    let child = Command::new(ark)
+    let child = program
+        .command()?
         .arg("--connection_file")
         .arg(&connection_file)
         .args(["--session-mode", "console", "--log"])
@@ -120,7 +122,7 @@ pub fn spawn(ark: &Path, log_file: Option<PathBuf>) -> Result<(SpawnedKernel, Co
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .with_context(|| format!("launching {}", ark.display()))?;
+        .context("launching the R kernel")?;
 
     Ok((
         SpawnedKernel {

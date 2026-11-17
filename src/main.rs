@@ -1,10 +1,11 @@
-//! betteR console: a terminal R console that drives an `ark` kernel over
+//! betteR console: a terminal R console that drives an `ark` kernel (built in) over
 //! Jupyter, with tree-sitter highlighting and LSP-backed completion.
 
 mod highlight;
 mod ide;
 mod jupyter;
 mod kernel;
+mod kernel_mode;
 mod lsp;
 mod plots;
 mod proxy;
@@ -28,11 +29,12 @@ USAGE:
 
 OPTIONS:
     -f, --connection-file <PATH>  Attach to a running kernel instead of starting one
-        --ark <PATH>              ark binary to launch (default: $ARK_PATH, PATH, ../betteR_mvp dev build)
+        --ark <PATH>              Use a separate ark binary instead of the built-in kernel
         --log <PATH>              Write the launched kernel's log here
         --no-lsp                  Disable LSP-backed completion
         --lsp-stdio               Bridge ark's LSP to stdin/stdout for an editor (needs -f)
         --ide-socket <PATH>       Connect to a host IDE (Run Selection, debugger, completion)
+        --kernel                  Run as the R kernel (used internally; needs --connection-file)
     -h, --help                    Show this help
     -V, --version                 Show version
 
@@ -81,6 +83,13 @@ fn parse_args() -> Result<Option<Args>> {
 }
 
 fn main() {
+    if kernel_mode::requested() {
+        if let Err(err) = kernel_mode::run() {
+            eprintln!("better --kernel: {err:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     match run() {
         Ok(code) => std::process::exit(code),
         Err(err) => {
@@ -112,8 +121,8 @@ fn run() -> Result<i32> {
     let (info, origin) = match &args.connection_file {
         Some(path) => (ConnectionInfo::read(path)?, Origin::Attached),
         None => {
-            let ark = kernel::find_ark(args.ark.clone())?;
-            let (kernel, info) = kernel::spawn(&ark, args.log.clone())?;
+            let program = kernel::KernelProgram::from_flag(args.ark.clone())?;
+            let (kernel, info) = kernel::spawn(&program, args.log.clone())?;
             (info, Origin::Spawned(kernel))
         },
     };
