@@ -28,7 +28,7 @@ USAGE:
 
 OPTIONS:
     -f, --connection-file <PATH>  Attach to a running kernel instead of starting one
-        --ark <PATH>              ark binary to launch (default: $ARK_PATH, PATH, dev build)
+        --ark <PATH>              ark binary to launch (default: $ARK_PATH, PATH, ../betteR_mvp dev build)
         --log <PATH>              Write the launched kernel's log here
         --no-lsp                  Disable LSP-backed completion
         --lsp-stdio               Bridge ark's LSP to stdin/stdout for an editor (needs -f)

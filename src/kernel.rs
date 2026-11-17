@@ -60,7 +60,7 @@ impl Drop for SpawnedKernel {
 }
 
 /// Resolves the ark binary: explicit flag, `$ARK_PATH`, `ark` on `PATH`, then
-/// the in-repo development build.
+/// a development build in a sibling `betteR_mvp/vendor/ark` checkout.
 pub fn find_ark(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = explicit.or_else(|| std::env::var_os("ARK_PATH").map(PathBuf::from)) {
         if p.is_file() {
@@ -76,7 +76,7 @@ pub fn find_ark(explicit: Option<PathBuf>) -> Result<PathBuf> {
             }
         }
     }
-    let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("../vendor/ark/target");
+    let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("../betteR_mvp/vendor/ark/target");
     for profile in ["release", "debug"] {
         let candidate = vendor.join(profile).join("ark");
         if candidate.is_file() {
