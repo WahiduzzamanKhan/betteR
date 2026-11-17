@@ -5,10 +5,12 @@
 //! plot events (`plot_open`, `plot_update`, `plot_close`, `plot_render_reply`),
 //! interactive output (`show_html_file`, `show_url`, `open_with_system`),
 //! help (`show_help`, `help_topic_reply`), environment explorer
-//! (`variables_event`, `comm_rpc_reply`) and `prompt_state` after each execution.
+//! (`variables_event`, `comm_rpc_reply`), data explorers (`comm_open`,
+//! `comm_event`, `comm_closed`) and `prompt_state` after each execution.
 //! IDE -> console: `execute` (code + optional file location), `complete_reply`,
 //! plot requests (`plot_render`, `plot_settings`, `plot_close`), `help_topic`,
-//! `comm_rpc` (a JSON-RPC request on the variables or UI comm).
+//! `comm_rpc` (a JSON-RPC request on the variables or UI comm, or on a data
+//! explorer by `comm_id`), `comm_close` (a data explorer).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};

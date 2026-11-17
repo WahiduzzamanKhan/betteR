@@ -17,6 +17,8 @@ use crate::jupyter::{Channel, KernelClient, Message};
 pub const PLOT_COMM_TARGET: &str = "positron.plot";
 pub const HELP_COMM_TARGET: &str = "positron.help";
 pub const VARIABLES_COMM_TARGET: &str = "positron.variables";
+/// Opened by ark for `View(df)` or a variables `view` request.
+pub const DATA_EXPLORER_COMM_TARGET: &str = "positron.dataExplorer";
 
 /// ark sends plot updates as unpadded base64; strict decoders (terminals,
 /// `atob`) want the padding.
@@ -61,6 +63,8 @@ pub struct PlotRelay {
     pending: Mutex<HashMap<String, Value>>,
     /// Jupyter `msg_id` of a generic comm RPC (`comm_rpc`) -> the IDE's request id.
     pending_rpc: Mutex<HashMap<String, Value>>,
+    /// Data explorer comms ark opened, which the IDE shows and addresses by id.
+    data_comms: Mutex<HashSet<String>>,
 }
 
 impl PlotRelay {
@@ -74,6 +78,7 @@ impl PlotRelay {
             comms: Mutex::new(HashSet::new()),
             pending: Mutex::new(HashMap::new()),
             pending_rpc: Mutex::new(HashMap::new()),
+            data_comms: Mutex::new(HashSet::new()),
         }
     }
 
@@ -148,6 +153,37 @@ impl PlotRelay {
             "comm_close" if self.comms.lock().unwrap().remove(comm_id) => {
                 if let Some(ide) = &self.ide {
                     ide.send(json!({ "type": "plot_close", "comm_id": comm_id }));
+                }
+                PlotEvent::Handled
+            },
+            // Data explorer (`View(df)`): the IDE shows the table and queries
+            // it with `comm_rpc`; ark sends `schema_update` / `data_update`
+            // when the variable changes and closes the comm when it's gone.
+            "comm_open" if c["target_name"] == DATA_EXPLORER_COMM_TARGET => {
+                let Some(ide) = &self.ide else { return PlotEvent::None };
+                self.data_comms.lock().unwrap().insert(comm_id.to_string());
+                ide.send(json!({
+                    "type": "comm_open",
+                    "comm_id": comm_id,
+                    "target": DATA_EXPLORER_COMM_TARGET,
+                    "data": c["data"],
+                }));
+                PlotEvent::Handled
+            },
+            "comm_msg" if self.data_comms.lock().unwrap().contains(comm_id) => {
+                if let Some(ide) = &self.ide {
+                    ide.send(json!({
+                        "type": "comm_event",
+                        "comm_id": comm_id,
+                        "method": c["data"]["method"],
+                        "params": c["data"]["params"],
+                    }));
+                }
+                PlotEvent::Handled
+            },
+            "comm_close" if self.data_comms.lock().unwrap().remove(comm_id) => {
+                if let Some(ide) = &self.ide {
+                    ide.send(json!({ "type": "comm_closed", "comm_id": comm_id }));
                 }
                 PlotEvent::Handled
             },
@@ -306,16 +342,17 @@ impl PlotRelay {
                 // A JSON-RPC request on the variables comm (`inspect`, `delete`,
                 // ...) or the UI comm (`evaluate_code`); answered with `comm_rpc_reply`.
                 Some("comm_rpc") => {
-                    let comm = match req["comm"].as_str() {
-                        Some("variables") => self.variables_comm.lock().unwrap().clone(),
-                        Some("ui") => self.ui_comm.lock().unwrap().clone(),
+                    let comm = match (req["comm"].as_str(), req["comm_id"].as_str()) {
+                        (Some("variables"), _) => self.variables_comm.lock().unwrap().clone(),
+                        (Some("ui"), _) => self.ui_comm.lock().unwrap().clone(),
+                        (_, Some(id)) if self.data_comms.lock().unwrap().contains(id) => Some(id.to_string()),
                         _ => None,
                     };
                     let Some(comm) = comm else {
                         ide.send(json!({
                             "type": "comm_rpc_reply",
                             "id": req["id"],
-                            "error": { "message": format!("comm not available: {}", req["comm"]) },
+                            "error": { "message": format!("comm not available: {}", if req["comm"].is_null() { &req["comm_id"] } else { &req["comm"] }) },
                         }));
                         continue;
                     };
@@ -332,6 +369,12 @@ impl PlotRelay {
                             "id": req["id"],
                             "error": { "message": err.to_string() },
                         })),
+                    }
+                },
+                // The IDE closed a data explorer: free ark's view of the table.
+                Some("comm_close") => {
+                    if self.data_comms.lock().unwrap().remove(comm_id) {
+                        let _ = client.send(Channel::Shell, "comm_close", json!({ "comm_id": comm_id, "data": {} }));
                     }
                 },
                 // The IDE dropped the plot from its history: free ark's recording.
