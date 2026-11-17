@@ -1,6 +1,6 @@
 """Phase 1 interactive smoke test: drives the real `better` binary in a PTY.
 
-Usage: .venv/bin/python console/tests/pty_smoke.py [path/to/better]
+Usage: uv run --with pexpect python tests/pty_smoke.py [path/to/better]
 """
 
 import os
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pexpect
 
-ROOT = Path(__file__).resolve().parents[2]
-BIN = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "console/target/debug/better")
+ROOT = Path(__file__).resolve().parents[1]
+BIN = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "target/debug/better")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]|\r")
 
 # Reedline enables bracketed paste each time it starts reading a line.
