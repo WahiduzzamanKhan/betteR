@@ -2,6 +2,9 @@
 //! comm carrying a pre-rendered PNG, and re-renders on request at any size and
 //! format. Hosted by an IDE, the console relays these to the IDE's plot pane;
 //! standalone, it draws them inline in terminals that support images.
+//!
+//! The same relay carries the IDE's other comm traffic: help, interactive
+//! output, the variables comm (environment explorer) and generic comm RPCs.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -13,6 +16,7 @@ use crate::jupyter::{Channel, KernelClient, Message};
 
 pub const PLOT_COMM_TARGET: &str = "positron.plot";
 pub const HELP_COMM_TARGET: &str = "positron.help";
+pub const VARIABLES_COMM_TARGET: &str = "positron.variables";
 
 /// ark sends plot updates as unpadded base64; strict decoders (terminals,
 /// `atob`) want the padding.
@@ -49,11 +53,14 @@ pub struct PlotRelay {
     ide: Option<Arc<Ide>>,
     ui_comm: Mutex<Option<String>>,
     help_comm: Mutex<Option<String>>,
+    variables_comm: Mutex<Option<String>>,
     /// Jupyter `msg_id` of a help-topic lookup -> the IDE's request id.
     pending_help: Mutex<HashMap<String, Value>>,
     comms: Mutex<HashSet<String>>,
     /// Jupyter `msg_id` of a render request -> the IDE's request id.
     pending: Mutex<HashMap<String, Value>>,
+    /// Jupyter `msg_id` of a generic comm RPC (`comm_rpc`) -> the IDE's request id.
+    pending_rpc: Mutex<HashMap<String, Value>>,
 }
 
 impl PlotRelay {
@@ -62,9 +69,11 @@ impl PlotRelay {
             ide,
             ui_comm: Mutex::new(None),
             help_comm: Mutex::new(None),
+            variables_comm: Mutex::new(None),
             pending_help: Mutex::new(HashMap::new()),
             comms: Mutex::new(HashSet::new()),
             pending: Mutex::new(HashMap::new()),
+            pending_rpc: Mutex::new(HashMap::new()),
         }
     }
 
@@ -80,10 +89,39 @@ impl PlotRelay {
         *self.help_comm.lock().unwrap() = Some(comm_id.to_string());
     }
 
+    pub fn set_variables_comm(&self, comm_id: &str) {
+        *self.variables_comm.lock().unwrap() = Some(comm_id.to_string());
+    }
+
     pub fn handle(&self, msg: &Message) -> PlotEvent {
         let c = &msg.content;
         let comm_id = c["comm_id"].as_str().unwrap_or_default();
+        if msg.msg_type() == "comm_msg"
+            && let Some(id) = msg.parent_id().and_then(|p| self.pending_rpc.lock().unwrap().remove(p))
+        {
+            if let Some(ide) = &self.ide {
+                ide.send(json!({
+                    "type": "comm_rpc_reply",
+                    "id": id,
+                    "result": c["data"]["result"],
+                    "error": c["data"]["error"],
+                }));
+            }
+            return PlotEvent::Handled;
+        }
         match msg.msg_type() {
+            // Environment explorer: `refresh` (full list) and `update` (diff)
+            // after each execution, for the global env or the debug frame.
+            "comm_msg" if self.variables_comm.lock().unwrap().as_deref() == Some(comm_id) => {
+                if let Some(ide) = &self.ide {
+                    ide.send(json!({
+                        "type": "variables_event",
+                        "method": c["data"]["method"],
+                        "params": c["data"]["params"],
+                    }));
+                }
+                PlotEvent::Handled
+            },
             "comm_msg" if self.ui_comm.lock().unwrap().as_deref() == Some(comm_id) => self.handle_ui(&c["data"]),
             "comm_msg" if self.help_comm.lock().unwrap().as_deref() == Some(comm_id) => self.handle_help(msg),
             "comm_open" if c["target_name"] == PLOT_COMM_TARGET => {
@@ -122,6 +160,14 @@ impl PlotRelay {
     /// Other UI events (prompt, width, ...) are left to the REPL.
     fn handle_ui(&self, data: &Value) -> PlotEvent {
         let params = &data["params"];
+        // Sent after every execution: the IDE refreshes session state on it.
+        // Left to the REPL too, which tracks the prompt.
+        if data["method"] == "prompt_state" {
+            if let Some(ide) = &self.ide {
+                ide.send(json!({ "type": "prompt_state", "params": params }));
+            }
+            return PlotEvent::None;
+        }
         let (target, title) = match data["method"].as_str() {
             Some("show_html_file") => (&params["path"], params["title"].as_str().unwrap_or("R")),
             Some("show_url") => (&params["url"], "R"),
@@ -255,6 +301,37 @@ impl PlotRelay {
                     });
                     if let Ok(msg_id) = client.send(Channel::Shell, "comm_msg", json!({ "comm_id": help, "data": data })) {
                         self.pending_help.lock().unwrap().insert(msg_id, req["id"].clone());
+                    }
+                },
+                // A JSON-RPC request on the variables comm (`inspect`, `delete`,
+                // ...) or the UI comm (`evaluate_code`); answered with `comm_rpc_reply`.
+                Some("comm_rpc") => {
+                    let comm = match req["comm"].as_str() {
+                        Some("variables") => self.variables_comm.lock().unwrap().clone(),
+                        Some("ui") => self.ui_comm.lock().unwrap().clone(),
+                        _ => None,
+                    };
+                    let Some(comm) = comm else {
+                        ide.send(json!({
+                            "type": "comm_rpc_reply",
+                            "id": req["id"],
+                            "error": { "message": format!("comm not available: {}", req["comm"]) },
+                        }));
+                        continue;
+                    };
+                    let mut data = json!({ "jsonrpc": "2.0", "id": req["id"].to_string(), "method": req["method"] });
+                    if !req["params"].is_null() {
+                        data["params"] = req["params"].clone();
+                    }
+                    match client.send(Channel::Shell, "comm_msg", json!({ "comm_id": comm, "data": data })) {
+                        Ok(msg_id) => {
+                            self.pending_rpc.lock().unwrap().insert(msg_id, req["id"].clone());
+                        },
+                        Err(err) => ide.send(json!({
+                            "type": "comm_rpc_reply",
+                            "id": req["id"],
+                            "error": { "message": err.to_string() },
+                        })),
                     }
                 },
                 // The IDE dropped the plot from its history: free ark's recording.

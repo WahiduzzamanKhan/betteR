@@ -22,7 +22,9 @@ use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
 use crate::kernel::SpawnedKernel;
 use crate::lsp::{CompletionBackend, LspClient, LspCompleter};
-use crate::plots::{detect_image_protocol, inline_image, ImageProtocol, PlotEvent, PlotRelay, HELP_COMM_TARGET};
+use crate::plots::{
+    detect_image_protocol, inline_image, ImageProtocol, PlotEvent, PlotRelay, HELP_COMM_TARGET, VARIABLES_COMM_TARGET,
+};
 
 const UI_COMM_TARGET: &str = "positron.ui";
 
@@ -286,6 +288,12 @@ impl Repl {
         // help pages then arrive as `show_help` events.
         let help = repl.client.lock().unwrap().open_comm(HELP_COMM_TARGET, json!({}))?;
         repl.plots.set_help_comm(&help);
+        // The IDE's environment explorer: ark sends the variables of the
+        // global env (or the debug frame) and serves `inspect`, `delete`, ...
+        if repl.ide.is_some() {
+            let variables = repl.client.lock().unwrap().open_comm(VARIABLES_COMM_TARGET, json!({}))?;
+            repl.plots.set_variables_comm(&variables);
+        }
 
         let backend = if let Some(ide) = &repl.ide {
             // Hosted: the IDE owns the kernel's one LSP connection.

@@ -38,6 +38,7 @@ With `--ide-socket`, the console connects to its host IDE over JSON lines on a U
 - **It runs IDE `execute` requests** with `positron.code_location`. Each top-level expression gets its own location shifted into the file, using tree-sitter byte positions, and is echoed at its own prompt. Half-typed input survives because reedline keeps its buffer across a break.
 - **It forwards ark's `start_debug` / `stop_debug` hints**, which the extension uses to attach or detach VS Code's debugger.
 - **It completes through the IDE's language client** instead of its own LSP, so ark keeps a single LSP client. Ark only sends console scopes and `ark:` virtual documents to its newest LSP connection.
+- **It feeds the IDE's environment explorer.** It opens ark's `positron.variables` comm and relays its `refresh` / `update` events as `variables_event`. It forwards the UI comm's `prompt_state`, which arrives after every execution. It passes the IDE's `comm_rpc` requests (variables `inspect`, `delete`, `clear`, `list`, and UI `evaluate_code`) to the matching comm and returns each reply as `comm_rpc_reply`. Like plot requests, these are sent from the background IOPub thread, so typing at the prompt isn't interrupted.
 
 Ark findings:
 1. **Every step emits `stop_debug` then `start_debug`.** Treating `stop_debug` as "done" and disconnecting makes ark inject `Q`.
