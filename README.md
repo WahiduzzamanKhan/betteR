@@ -1,6 +1,8 @@
 # betteR: terminal R console
 
-The VS Code extension that hosts it lives in the sibling repo [vs_code_betteR](../vs_code_betteR). Ark is not vendored here; point `--ark`/`ARK_PATH` at a build, or keep the development build at `../betteR_mvp/vendor/ark`.
+The VS Code extension that hosts it lives in the sibling repo [vs_code_betteR](../vs_code_betteR).
+
+**One binary.** [ark](https://github.com/posit-dev/ark) (MIT) is built into `better`, pinned to one upstream commit in `Cargo.toml`. The only other requirement is an R installation; nothing is installed into the R library.
 
 A Rust R console that runs in any terminal and drives a single **ark** R session over Jupyter. Highlighting comes from tree-sitter-r. Completion comes from ark's LSP, the same engine the VS Code editor will use in Phase 2. Nothing is installed into the R library.
 
@@ -19,7 +21,7 @@ cargo test                                          # unit tests
 uv run --with pexpect python tests/pty_smoke.py     # end-to-end checks in a real PTY
 ```
 
-`better` looks for ark in this order: `--ark <path>`, then `$ARK_PATH`, then `ark` on `PATH`, then `../betteR_mvp/vendor/ark/target/{release,debug}/ark`.
+`better` runs its R session by launching itself in kernel mode (`better --kernel`, the same code as ark's own binary). To try a different ark build instead, pass `--ark <path>`. A release build (`cargo build --release`) is about 31 MB.
 
 ## What works
 
