@@ -123,7 +123,8 @@ impl Validator for KernelValidator {
 
 pub enum Origin {
     Spawned(SpawnedKernel),
-    Attached,
+    /// Attached to a running kernel through this connection file.
+    Attached(PathBuf),
 }
 
 pub struct Repl {
@@ -315,17 +316,32 @@ impl Repl {
             let ark = info["implementation_version"].as_str().unwrap_or("?");
             let how = match &repl.origin {
                 Origin::Spawned(_) => "new session",
-                Origin::Attached => "attached to running session",
+                Origin::Attached(_) => "attached to running session",
             };
             let dim = Color::DarkGray.normal();
             println!("{}", Color::Blue.bold().paint(r_version.trim()));
             println!("{}", dim.paint(format!("ark {ark} · {how}")));
             println!("{}", dim.paint("Tab completes · Alt-Enter newline · Ctrl-C interrupts · Ctrl-D quits"));
+            repl.replay_startup_output();
             repl.editor = Some(repl.build_editor(backend)?);
             repl.spawn_idle_pump();
             repl.input_editor = Some(Reedline::create());
         }
         Ok(repl)
+    }
+
+    /// Shows what R printed while the session started (e.g. `.Rprofile`, renv),
+    /// as recorded by the kernel. A spawned kernel's console saw it live; one
+    /// that attached later replays it.
+    fn replay_startup_output(&mut self) {
+        let Origin::Attached(connection_file) = &self.origin else {
+            return;
+        };
+        for (stream, text) in crate::startup::read(connection_file) {
+            let style = (stream == "stderr").then(|| Color::LightRed.normal());
+            self.write(&text, style);
+        }
+        self.finish_line();
     }
 
     fn build_editor(&self, backend: CompletionBackend) -> Result<Reedline> {
@@ -859,7 +875,7 @@ impl Repl {
     fn kernel_exited(&mut self) -> bool {
         match &mut self.origin {
             Origin::Spawned(k) => k.has_exited(),
-            Origin::Attached => false,
+            Origin::Attached(_) => false,
         }
     }
 
@@ -876,7 +892,7 @@ impl Repl {
     fn log_hint(&self) -> String {
         match &self.origin {
             Origin::Spawned(k) => format!(" (see {})", k.log_file.display()),
-            Origin::Attached => String::new(),
+            Origin::Attached(_) => String::new(),
         }
     }
 
@@ -898,7 +914,7 @@ impl Repl {
                 }
                 kernel.clean_exit
             },
-            Origin::Attached => {
+            Origin::Attached(_) => {
                 let alive = client.is_alive();
                 if !alive {
                     eprintln!("{}", Color::LightRed.paint("The attached kernel stopped responding."));

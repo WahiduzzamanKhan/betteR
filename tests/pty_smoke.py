@@ -3,8 +3,11 @@
 Usage: uv run --with pexpect python tests/pty_smoke.py [path/to/better]
 """
 
+import json
 import os
 import re
+import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -34,10 +37,10 @@ os.chmod(FAKE_BROWSER, 0o755)
 class Term:
     """pexpect wrapper that answers cursor-position queries (reedline sends them)."""
 
-    def __init__(self):
+    def __init__(self, args=(), cwd=None):
         env = dict(os.environ, BETTER_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"),
                    BETTER_INLINE_IMAGES="iterm", BROWSER=FAKE_BROWSER)
-        self.p = pexpect.spawn(BIN, dimensions=(40, 120), encoding="utf-8", timeout=30, env=env)
+        self.p = pexpect.spawn(BIN, list(args), dimensions=(40, 120), encoding="utf-8", timeout=30, env=env, cwd=cwd)
         self.raw = ""
 
     def expect(self, *patterns, timeout=30):
@@ -144,6 +147,44 @@ t.p.sendcontrol("d")
 t.p.expect(pexpect.EOF, timeout=15)
 t.p.close()
 check("Ctrl-D exits cleanly", t.p.exitstatus == 0, t.p.exitstatus)
+
+# `.Rprofile` output (e.g. renv's "Project loaded"). A console that starts its
+# own kernel sees it live; one attaching to a running kernel (as the VS Code
+# extension's does) gets it replayed from what the kernel recorded at startup.
+project = tempfile.mkdtemp()
+with open(os.path.join(project, ".Rprofile"), "w") as f:
+    f.write('cat("profile stdout\\n")\nmessage("profile message")\n')
+
+t = Term(cwd=project)
+ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+out = ANSI.sub("", t.raw)
+check(".Rprofile output shown once (own kernel)",
+      ok and out.count("profile stdout") == 1 and out.count("profile message") == 1, out)
+t.p.sendcontrol("d")
+t.p.expect(pexpect.EOF, timeout=15)
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+session = tempfile.mkdtemp(prefix="better-smoke-")
+conn = os.path.join(session, "kernel.json")
+with open(conn, "w") as f:
+    json.dump({**{p: free_port() for p in ("shell_port", "iopub_port", "stdin_port", "control_port", "hb_port")},
+               "ip": "127.0.0.1", "key": "smoke", "transport": "tcp", "signature_scheme": "hmac-sha256"}, f)
+kernel = subprocess.Popen([BIN, "--kernel", "--connection_file", conn, "--log", os.path.join(session, "ark.log")],
+                          cwd=project)
+time.sleep(8)  # well past startup, like the extension's console
+t = Term(["--connection-file", conn])
+ok = t.expect("Ctrl-D quits", "profile stdout", "profile message", READY, TOP, timeout=60)
+check(".Rprofile output replayed when attaching later", ok, ANSI.sub("", t.raw))
+t.p.sendcontrol("d")
+t.p.expect(pexpect.EOF, timeout=15)
+kernel.kill()
+kernel.wait()
 
 print()
 failed = [k for k, v in results.items() if not v]

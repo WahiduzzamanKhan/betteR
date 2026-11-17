@@ -58,6 +58,64 @@ impl Message {
     }
 }
 
+fn sign(key: Option<&[u8]>, parts: &[&[u8]]) -> String {
+    let Some(key) = key else {
+        return String::new();
+    };
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    for p in parts {
+        mac.update(p);
+    }
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Parses (and, with a key, verifies) a multipart Jupyter message.
+fn decode(frames: &[Vec<u8>], key: Option<&[u8]>) -> Result<Message> {
+    let Some(delim) = frames.iter().position(|f| f == DELIMITER) else {
+        bail!("malformed Jupyter message: no delimiter");
+    };
+    if frames.len() < delim + 6 {
+        bail!("malformed Jupyter message: too few frames");
+    }
+    let [signature, header, parent, metadata, content] = [1, 2, 3, 4, 5].map(|i| &frames[delim + i]);
+    if key.is_some() && sign(key, &[header, parent, metadata, content]).as_bytes() != signature.as_slice() {
+        bail!("invalid message signature");
+    }
+    Ok(Message {
+        header: serde_json::from_slice(header)?,
+        parent_header: serde_json::from_slice(parent)?,
+        content: serde_json::from_slice(content)?,
+    })
+}
+
+/// A listen-only IOPub subscriber.
+pub struct IopubListener {
+    _ctx: zmq::Context,
+    socket: zmq::Socket,
+    key: Option<Vec<u8>>,
+}
+
+impl IopubListener {
+    /// Subscribes to everything. Connecting before the kernel binds is fine:
+    /// ZeroMQ connects (and subscribes) as soon as the port opens.
+    pub fn connect(info: &ConnectionInfo) -> Result<Self> {
+        let ctx = zmq::Context::new();
+        let socket = ctx.socket(zmq::SUB)?;
+        socket.set_linger(0)?;
+        socket.set_subscribe(b"")?;
+        socket.connect(&info.endpoint(info.iopub_port))?;
+        Ok(Self {
+            _ctx: ctx,
+            socket,
+            key: (!info.key.is_empty()).then(|| info.key.as_bytes().to_vec()),
+        })
+    }
+
+    pub fn recv(&self) -> Result<Message> {
+        decode(&self.socket.recv_multipart(0)?, self.key.as_deref())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     Shell,
@@ -133,14 +191,7 @@ impl KernelClient {
     }
 
     fn sign(&self, parts: &[&[u8]]) -> String {
-        let Some(key) = &self.key else {
-            return String::new();
-        };
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
-        for p in parts {
-            mac.update(p);
-        }
-        hex::encode(mac.finalize().into_bytes())
+        sign(self.key.as_deref(), parts)
     }
 
     /// Sends a message and returns its `msg_id`.
@@ -182,25 +233,7 @@ impl KernelClient {
     }
 
     fn recv(&self, channel: Channel) -> Result<Message> {
-        let frames = self.socket(channel).recv_multipart(0)?;
-        let Some(delim) = frames.iter().position(|f| f == DELIMITER) else {
-            bail!("malformed Jupyter message: no delimiter");
-        };
-        if frames.len() < delim + 6 {
-            bail!("malformed Jupyter message: too few frames");
-        }
-        let [signature, header, parent, metadata, content] = [1, 2, 3, 4, 5].map(|i| &frames[delim + i]);
-        if self.key.is_some() {
-            let expected = self.sign(&[header, parent, metadata, content]);
-            if expected.as_bytes() != signature.as_slice() {
-                bail!("invalid message signature");
-            }
-        }
-        Ok(Message {
-            header: serde_json::from_slice(header)?,
-            parent_header: serde_json::from_slice(parent)?,
-            content: serde_json::from_slice(content)?,
-        })
+        decode(&self.socket(channel).recv_multipart(0)?, self.key.as_deref())
     }
 
     /// Waits up to `timeout` for a message on any of `channels`.

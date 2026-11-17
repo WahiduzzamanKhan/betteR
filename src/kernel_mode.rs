@@ -46,6 +46,10 @@ pub fn run() -> Result<()> {
     ark::panic::install();
 
     let (connection, registration) = amalthea::kernel::read_connection(&connection_file);
+    // Before R starts, so `.Rprofile` output is caught for consoles that attach later.
+    if let Ok(info) = crate::jupyter::ConnectionInfo::read(std::path::Path::new(&connection_file)) {
+        crate::startup::record(&info, std::path::Path::new(&connection_file));
+    }
     // Same R arguments as ark: no workspace save/restore prompts.
     let r_args = vec!["--no-save".into(), "--no-restore-data".into(), "--interactive".into()];
     ark::start::start_kernel(connection, registration, r_args, None, session_mode, true, DefaultRepos::Auto);

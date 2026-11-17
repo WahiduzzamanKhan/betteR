@@ -51,6 +51,7 @@ impl Drop for SpawnedKernel {
             let _ = self.child.wait();
         }
         let _ = std::fs::remove_file(&self.connection_file);
+        let _ = std::fs::remove_file(crate::startup::path_for(&self.connection_file));
         if self.auto_log && self.clean_exit {
             let _ = std::fs::remove_file(&self.log_file);
         }

@@ -10,6 +10,7 @@ mod lsp;
 mod plots;
 mod proxy;
 mod repl;
+mod startup;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -119,7 +120,7 @@ fn run() -> Result<i32> {
     }
 
     let (info, origin) = match &args.connection_file {
-        Some(path) => (ConnectionInfo::read(path)?, Origin::Attached),
+        Some(path) => (ConnectionInfo::read(path)?, Origin::Attached(path.clone())),
         None => {
             let program = kernel::KernelProgram::from_flag(args.ark.clone())?;
             let (kernel, info) = kernel::spawn(&program, args.log.clone())?;
