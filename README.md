@@ -1,4 +1,6 @@
-# better: terminal R console (Phases 1, 3 and 4)
+# betteR: terminal R console
+
+The VS Code extension that hosts it lives in the sibling repo [vs_code_betteR](../vs_code_betteR). Ark is not vendored here; point `--ark`/`ARK_PATH` at a build, or keep the development build at `../betteR_mvp/vendor/ark`.
 
 A Rust R console that runs in any terminal and drives a single **ark** R session over Jupyter. Highlighting comes from tree-sitter-r. Completion comes from ark's LSP, the same engine the VS Code editor will use in Phase 2. Nothing is installed into the R library.
 
@@ -6,7 +8,7 @@ A Rust R console that runs in any terminal and drives a single **ark** R session
 
 ```sh
 export PATH=/opt/homebrew/opt/rustup/bin:$PATH     # Homebrew rustup is keg-only
-cd console && cargo build
+cargo build
 ./target/debug/better                              # start a new ark session
 ./target/debug/better -f /path/to/kernel.json      # attach to a running kernel (Phase 2)
 ./target/debug/better --lsp-stdio -f kernel.json   # bridge ark's LSP to stdio (used by the VS Code extension)
@@ -14,10 +16,10 @@ cd console && cargo build
 echo 'summary(mtcars)' | ./target/debug/better     # piped: run and exit (exit 1 on R error)
 
 cargo test                                          # unit tests
-../.venv/bin/python tests/pty_smoke.py              # 15 end-to-end checks in a real PTY
+uv run --with pexpect python tests/pty_smoke.py     # end-to-end checks in a real PTY
 ```
 
-`better` looks for ark in this order: `--ark <path>`, then `$ARK_PATH`, then `ark` on `PATH`, then `../vendor/ark/target/{release,debug}/ark`.
+`better` looks for ark in this order: `--ark <path>`, then `$ARK_PATH`, then `ark` on `PATH`, then `../betteR_mvp/vendor/ark/target/{release,debug}/ark`.
 
 ## What works
 
