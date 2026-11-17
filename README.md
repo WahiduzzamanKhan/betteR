@@ -27,7 +27,7 @@ cyl   carb
 - **Scripting:** pipe code in (`echo 'summary(mtcars)' | better`), with exit code 1 on an R error.
 - **Nothing installed into R.** No `languageserver`, `httpgd` or other helper packages.
 
-betteR also powers **betteR for VS Code** (the `vs_code_betteR` repository). The extension runs the same console in VS Code's terminal and shares its R session with the editor, debugger, plot pane and help panel.
+betteR also powers **betteR for VS Code** ([vs_code_betteR](https://github.com/WahiduzzamanKhan/vs_code_betteR)). The extension runs the same console in VS Code's terminal and shares its R session with the editor, debugger, plot pane and help panel.
 
 ## How it works
 
@@ -44,7 +44,7 @@ betteR is built on [ark](https://github.com/posit-dev/ark), Posit's open-source 
 There are no prebuilt binaries yet, so install from source:
 
 ```sh
-git clone <this repository> betteR
+git clone https://github.com/WahiduzzamanKhan/betteR.git
 cd betteR
 cargo install --path .
 ```
@@ -164,6 +164,9 @@ uv run --with pexpect python tests/pty_smoke.py    # end-to-end tests in a real 
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org). For how the console works with ark, see [docs/design.md](docs/design.md).
 
-## Credits
+## License and credits
+
+betteR is released under the [MIT License](LICENSE).
+
 
 betteR is built on [ark](https://github.com/posit-dev/ark) by Posit Software, PBC (MIT licence), [reedline](https://github.com/nushell/reedline) and [tree-sitter-r](https://github.com/r-lib/tree-sitter-r).
