@@ -33,7 +33,9 @@ How the console is built on ark, and what was learned about ark's protocols alon
 
 ## Hosted mode and ark debugger findings (Phase 3)
 
-With `--ide-socket`, the console connects to its host IDE over JSON lines on a Unix socket, and:
+With `--ide <port>`, the console connects to its host IDE over JSON lines on loopback TCP (`127.0.0.1:<port>`, with `TCP_NODELAY`), and:
+
+- **It proves itself first.** Any local user can connect to a loopback port, so the IDE gives the console a random token in the `BETTER_IDE_TOKEN` environment variable. It isn't on the command line, where other users could read it. The console's first line is `{"type":"hello","token":"…"}`, and the IDE closes any connection that doesn't start with a matching one. TCP rather than a Unix socket because it works the same on Windows, where Node can't listen on a file path.
 
 - **It opens ark's `ark_dap` comm and reports the DAP port.** The comm holder is the frontend ark asks to run debugger commands. A Step clicked in the IDE arrives as a comm `execute {command: "n"}`. A background thread watches IOPub while the line editor waits, and raises reedline's break signal so the command is echoed (`Browse[1]> n`) and run as if typed.
 - **It runs IDE `execute` requests** with `positron.code_location`. Each top-level expression gets its own location shifted into the file, using tree-sitter byte positions, and is echoed at its own prompt. Half-typed input survives because reedline keeps its buffer across a break.
@@ -65,7 +67,7 @@ Reedline has no option for completing as you type, so the console assembles it:
 
   It's word-wrapped by display width and ends in "…" when it doesn't fit. A function without a help page (one defined in the session, or an S3 method listed under its generic) gets its signature from signature help instead. Until help arrives, or for things without any, the box says what the suggestion is (`function`, `column`). Fetching blocks drawing: about 0.1 s per item standalone, longer the first time.
 - **Speed.** Ark's answer for a word is cached and narrowed locally as the word grows, unless ark marks it incomplete. So typing a name asks once, not once per letter. Completion as you type gives up after 800 ms rather than stall typing.
-- **Signatures.** Ark only finds a call that's closed, as it always is in an editor that pairs brackets. So the status line asks about the input with its open brackets (and any open string) closed at the end. It asks again only when the call or the argument changes, and gives up after 500 ms. Hosted, completion, help and signature requests go through the extension's LSP client (`complete`, `resolve` and `signature` on `ide.sock`).
+- **Signatures.** Ark only finds a call that's closed, as it always is in an editor that pairs brackets. So the status line asks about the input with its open brackets (and any open string) closed at the end. It asks again only when the call or the argument changes, and gives up after 500 ms. Hosted, completion, help and signature requests go through the extension's LSP client (`complete`, `resolve` and `signature` on the IDE channel).
 
 ## Known limitations / next steps
 

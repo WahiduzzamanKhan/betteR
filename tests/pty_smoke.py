@@ -37,9 +37,9 @@ os.chmod(FAKE_BROWSER, 0o755)
 class Term:
     """pexpect wrapper that answers cursor-position queries (reedline sends them)."""
 
-    def __init__(self, args=(), cwd=None):
+    def __init__(self, args=(), cwd=None, env=None):
         env = dict(os.environ, BETTER_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"),
-                   BETTER_INLINE_IMAGES="iterm", BROWSER=FAKE_BROWSER)
+                   BETTER_INLINE_IMAGES="iterm", BROWSER=FAKE_BROWSER, **(env or {}))
         self.p = pexpect.spawn(BIN, list(args), dimensions=(40, 120), encoding="utf-8", timeout=30, env=env, cwd=cwd)
         self.raw = ""
 
@@ -270,6 +270,34 @@ ok = t.expect("Ctrl-D quits", "profile stdout", "profile message", READY, TOP, t
 check(".Rprofile output replayed when attaching later", ok, ANSI.sub("", t.raw))
 t.p.sendcontrol("d")
 t.p.expect(pexpect.EOF, timeout=15)
+
+# Hosted by an IDE, as the VS Code extension does: the IDE listens on loopback
+# TCP, and the console proves itself with the token from its environment.
+token = os.urandom(16).hex()
+with socket.socket() as server:
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    server.settimeout(60)
+    t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])], env={"BETTER_IDE_TOKEN": token})
+    try:
+        ide, _ = server.accept()
+        ide_lines = ide.makefile("r", encoding="utf-8")
+        hello = json.loads(ide_lines.readline())
+    except (OSError, ValueError) as e:
+        ide, hello = None, repr(e)
+    check("hosted console sends hello with its token first", hello == {"type": "hello", "token": token}, hello)
+    argv = subprocess.run(["ps", "-o", "command=", "-p", str(t.p.pid)], capture_output=True, text=True).stdout
+    check("IDE token is not on the console's command line", argv.strip() != "" and token not in argv, argv)
+    ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+    if ide:
+        t.raw = ""
+        ide.sendall((json.dumps({"type": "execute", "code": 'cat("from the IDE\\n")'}) + "\n").encode())
+        ok = ok and t.expect(r"from the IDE\r?\n", READY, TOP)
+    check("hosted console runs code the IDE sends", ok, ANSI.sub("", t.raw)[-300:])
+    t.p.sendcontrol("d")
+    t.p.expect(pexpect.EOF, timeout=15)
+    if ide:
+        ide.close()
 kernel.kill()
 kernel.wait()
 

@@ -126,7 +126,7 @@ better [OPTIONS]
   -V, --version                 Show the version
 ```
 
-`--kernel`, `--lsp-stdio` and `--ide-socket` are used internally by the VS Code extension.
+`--kernel`, `--lsp-stdio` and `--ide <PORT>` are used internally by the VS Code extension. `--ide` connects to it on `127.0.0.1:<PORT>` and needs the extension's token in the `BETTER_IDE_TOKEN` environment variable.
 
 **Running scripts:** if input is piped in, `better` runs it and exits. It stops at the first error and exits with code 1:
 

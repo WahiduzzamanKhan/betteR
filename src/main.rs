@@ -36,7 +36,8 @@ OPTIONS:
         --log <PATH>              Write the launched kernel's log here
         --no-lsp                  Disable LSP-backed completion
         --lsp-stdio               Bridge ark's LSP to stdin/stdout for an editor (needs -f)
-        --ide-socket <PATH>       Connect to a host IDE (Run Selection, debugger, completion)
+        --ide <PORT>              Connect to a host IDE on 127.0.0.1:<PORT> (Run Selection, debugger,
+                                  completion); its token must be in BETTER_IDE_TOKEN
         --kernel                  Run as the R kernel (used internally; needs --connection-file)
     -h, --help                    Show this help
     -V, --version                 Show version
@@ -49,7 +50,7 @@ struct Args {
     log: Option<PathBuf>,
     lsp: bool,
     lsp_stdio: bool,
-    ide_socket: Option<PathBuf>,
+    ide_port: Option<u16>,
 }
 
 fn parse_args() -> Result<Option<Args>> {
@@ -59,7 +60,7 @@ fn parse_args() -> Result<Option<Args>> {
         log: None,
         lsp: true,
         lsp_stdio: false,
-        ide_socket: None,
+        ide_port: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -70,7 +71,10 @@ fn parse_args() -> Result<Option<Args>> {
             "--log" => args.log = Some(value(&arg)?.into()),
             "--no-lsp" => args.lsp = false,
             "--lsp-stdio" => args.lsp_stdio = true,
-            "--ide-socket" => args.ide_socket = Some(value(&arg)?.into()),
+            "--ide" => {
+                let port = value(&arg)?;
+                args.ide_port = Some(port.parse().with_context(|| format!("--ide needs a port number, not `{port}`"))?);
+            },
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(None);
@@ -129,8 +133,19 @@ fn run() -> Result<i32> {
             (info, Origin::Spawned(kernel))
         },
     };
+    // Checked before connecting, so a missing token fails fast and clearly.
+    let ide = match args.ide_port {
+        Some(port) => {
+            let token = std::env::var("BETTER_IDE_TOKEN")
+                .ok()
+                .filter(|t| !t.is_empty())
+                .context("--ide needs the IDE's token in the BETTER_IDE_TOKEN environment variable")?;
+            Some((port, token))
+        },
+        None => None,
+    };
     let client = KernelClient::connect(&info)?;
-    let mut repl = Repl::start(client, origin, args.lsp, interrupted, args.ide_socket.as_deref())?;
+    let mut repl = Repl::start(client, origin, args.lsp, interrupted, ide)?;
 
     if std::io::stdin().is_terminal() {
         repl.run()?;

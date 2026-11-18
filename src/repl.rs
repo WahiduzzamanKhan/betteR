@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -247,7 +247,7 @@ impl Repl {
         origin: Origin,
         use_lsp: bool,
         interrupted: Arc<AtomicBool>,
-        ide_socket: Option<&Path>,
+        ide: Option<(u16, String)>,
     ) -> Result<Self> {
         let mut repl = Self {
             client: Arc::new(Mutex::new(client)),
@@ -277,8 +277,8 @@ impl Repl {
         repl.open_ui_comm()?;
         let interactive = std::io::stdin().is_terminal();
 
-        if let Some(path) = ide_socket {
-            let ide = Ide::connect(path, repl.wake.clone())?;
+        if let Some((port, token)) = ide {
+            let ide = Ide::connect(port, &token, repl.wake.clone())?;
             repl.ide = Some(ide.clone());
             repl.plots = Arc::new(PlotRelay::new(Some(ide.clone())));
             repl.open_debugger(&ide)?;

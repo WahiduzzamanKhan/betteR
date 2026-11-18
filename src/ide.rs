@@ -1,5 +1,10 @@
 //! Channel between the console and its host IDE (the VS Code extension),
-//! carried as JSON lines over a Unix socket the IDE listens on.
+//! carried as JSON lines over loopback TCP. The IDE listens on `127.0.0.1`
+//! and starts the console with `--ide <port>`, and with a secret token in the
+//! `BETTER_IDE_TOKEN` environment variable (not on the command line, where
+//! other users could read it). Any local user can connect to the port, so the
+//! console's first line is `{"type":"hello","token":"<token>"}`, and the IDE
+//! closes any connection that doesn't start with the right one.
 //!
 //! Console -> IDE: `dap_port`, `debug` (start/stop), `complete`, `signature` and `resolve` requests,
 //! plot events (`plot_open`, `plot_update`, `plot_close`, `plot_render_reply`),
@@ -15,8 +20,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::net::{Ipv4Addr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -26,7 +30,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 pub struct Ide {
-    writer: Mutex<UnixStream>,
+    writer: Mutex<TcpStream>,
     pending: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
     inbox: Mutex<VecDeque<Value>>,
     /// Plot requests are served by the background IOPub thread without
@@ -36,10 +40,16 @@ pub struct Ide {
 }
 
 impl Ide {
-    /// Connects and starts reading. `wake` is raised whenever an event that
-    /// needs the main loop (e.g. `execute`) arrives, so line editing can yield.
-    pub fn connect(path: &Path, wake: Arc<AtomicBool>) -> Result<Arc<Self>> {
-        let stream = UnixStream::connect(path).with_context(|| format!("connecting to IDE at {}", path.display()))?;
+    /// Connects to the IDE on loopback `port`, proves itself with `token`, and
+    /// starts reading. `wake` is raised whenever an event that needs the main
+    /// loop (e.g. `execute`) arrives, so line editing can yield.
+    pub fn connect(port: u16, token: &str, wake: Arc<AtomicBool>) -> Result<Arc<Self>> {
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .with_context(|| format!("connecting to the IDE on port {port}"))?;
+        // Small, latency-sensitive messages (completion requests).
+        stream.set_nodelay(true)?;
+        let hello = json!({ "type": "hello", "token": token }).to_string() + "\n";
+        stream.write_all(hello.as_bytes()).context("sending hello to the IDE")?;
         let reader = BufReader::new(stream.try_clone()?);
         let ide = Arc::new(Self {
             writer: Mutex::new(stream),
