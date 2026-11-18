@@ -141,13 +141,17 @@ pub fn spawn(program: &KernelProgram, log_file: Option<PathBuf>) -> Result<(Spaw
 /// The connection file holds the HMAC key, so keep it owner-readable only.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(bytes)?;
+    create_private(path)?.write_all(bytes)?;
     Ok(())
+}
+
+/// Creates (or truncates) `path` for writing, readable only by its owner.
+/// On Unix that takes mode 0600. On Windows, files under `%TEMP%` (in the
+/// user's profile) are already private to the user.
+pub fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
 }

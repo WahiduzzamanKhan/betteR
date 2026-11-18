@@ -7,9 +7,7 @@
 //! records stream output, up to the first execution, in a file next to the
 //! connection file. A console that attaches replays it.
 
-use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -32,7 +30,7 @@ pub fn record(info: &ConnectionInfo, connection_file: &Path) {
     let path = path_for(connection_file);
     std::thread::spawn(move || {
         // Owner-only, like the connection file: it holds session output.
-        let Ok(mut file) = OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(&path) else {
+        let Ok(mut file) = crate::kernel::create_private(&path) else {
             return;
         };
         let mut written = 0;
