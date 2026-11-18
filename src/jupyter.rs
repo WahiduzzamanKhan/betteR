@@ -282,7 +282,15 @@ impl KernelClient {
     /// Sends `kernel_info_request` until both the shell reply and the matching
     /// IOPub status arrive, which guarantees the IOPub subscription is live.
     /// `abort` is polled between attempts and fails startup with its message.
-    pub fn wait_ready(&self, timeout: Duration, mut abort: impl FnMut() -> Option<String>) -> Result<Value> {
+    /// Asks `kernel_info` until the kernel answers, and returns the reply.
+    /// Unrelated IOPub messages that arrive meanwhile, such as `.Rprofile`
+    /// output (which has no parent request), go to `on_other`.
+    pub fn wait_ready(
+        &self,
+        timeout: Duration,
+        mut abort: impl FnMut() -> Option<String>,
+        mut on_other: impl FnMut(Message),
+    ) -> Result<Value> {
         let deadline = Instant::now() + timeout;
         loop {
             if Instant::now() > deadline {
@@ -300,6 +308,9 @@ impl KernelClient {
                     continue;
                 };
                 if msg.parent_id() != Some(id.as_str()) {
+                    if channel == Channel::Iopub {
+                        on_other(msg);
+                    }
                     continue;
                 }
                 match channel {

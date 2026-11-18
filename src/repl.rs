@@ -405,10 +405,22 @@ impl Repl {
 
     fn wait_ready(&mut self, timeout: Duration) -> Result<Value> {
         let client = self.client.clone();
-        let client = client.lock().unwrap();
-        client.wait_ready(timeout, || {
-            self.kernel_exited().then(|| format!("kernel exited during startup{}", self.log_hint()))
-        })
+        let mut early = Vec::new();
+        let info = client.lock().unwrap().wait_ready(
+            timeout,
+            || self.kernel_exited().then(|| format!("kernel exited during startup{}", self.log_hint())),
+            |msg| early.push(msg),
+        )?;
+        // Output R printed while starting (`.Rprofile`) can arrive before the
+        // kernel answers. A spawned kernel's console shows it as it does any
+        // output. An attached console replays the recorded copy instead (see
+        // `replay_startup_output`), so showing this too would print it twice.
+        if matches!(self.origin, Origin::Spawned(_)) {
+            for msg in &early {
+                self.handle_iopub(msg);
+            }
+        }
+        Ok(info)
     }
 
     /// The UI comm gives us prompt changes (e.g. `Browse[1]>`) and lets R
