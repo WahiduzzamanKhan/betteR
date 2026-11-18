@@ -30,3 +30,7 @@ ark = { git = "https://github.com/posit-dev/ark", rev = "042c3695d124e0d452e6fdc
 amalthea = { git = "https://github.com/posit-dev/ark", rev = "042c3695d124e0d452e6fdcdd213ea87a5b179ad" }
 streaming-iterator = "0.1.9"
 unicode-width = "0.2.3"
+
+[build-dependencies]
+# Windows application manifest (UTF-8 code page); see build.rs. Same version as ark's.
+embed-resource = "3.0.12"

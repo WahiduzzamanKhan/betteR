@@ -1,0 +1,16 @@
+// Copied from ark (https://github.com/posit-dev/ark, MIT licence, Copyright (C)
+// Posit Software, PBC), crates/ark/resources/manifest/ark-manifest.rc at
+// commit 042c3695d124e0d452e6fdcdd213ea87a5b179ad, with the file name changed.
+// Embedded into better.exe by build.rs on Windows only.
+
+// This is a C file that embed-resource compiles for us.
+// It helps embed our Windows Application Manifest file.
+// https://learn.microsoft.com/en-us/windows/win32/sbscs/application-manifests
+// https://learn.microsoft.com/en-us/cpp/build/reference/manifest-create-side-by-side-assembly-manifest?view=msvc-170
+
+// This defines `RT_MANIFEST` to `24`. embed-resource should know how to ensure the header is available.
+// https://github.com/nabijaczleweli/rust-embed-resource/issues/11#issuecomment-779295722
+#include <winuser.h>
+
+// The `1` is a `resource_id` that specifies us as an executable file
+1 RT_MANIFEST "better.exe.manifest"
