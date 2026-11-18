@@ -4,19 +4,20 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use nu_ansi_term::{Color, Style};
 use reedline::{
-    default_emacs_keybindings, ColumnarMenu, DefaultHinter, EditCommand, Emacs, FileBackedHistory, Highlighter,
+    default_emacs_keybindings, DefaultHinter, DescriptionMode, EditCommand, Emacs, FileBackedHistory, Highlighter, IdeMenu,
     HistoryItem, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline,
     ReedlineEvent, ReedlineMenu, Signal, ValidationResult, Validator,
 };
 use serde_json::{json, Value};
 
+use crate::assist::{AutoCompleteMode, CompletionMenu, Docs, SignatureLine, COMPLETION_MENU};
 use crate::highlight::RHighlighter;
 use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
@@ -346,34 +347,58 @@ impl Repl {
 
     fn build_editor(&self, backend: CompletionBackend) -> Result<Reedline> {
         let mut keybindings = default_emacs_keybindings();
+        // Completion pops up as you type; Tab takes the highlighted suggestion
+        // (or asks for suggestions when none are showing), Enter always runs.
         keybindings.add_binding(
             KeyModifiers::NONE,
             KeyCode::Tab,
-            ReedlineEvent::UntilFound(vec![
-                ReedlineEvent::Menu("completion_menu".into()),
-                ReedlineEvent::MenuNext,
-            ]),
+            ReedlineEvent::UntilFound(vec![ReedlineEvent::MenuAccept, ReedlineEvent::Menu(COMPLETION_MENU.into())]),
         );
         keybindings.add_binding(KeyModifiers::SHIFT, KeyCode::BackTab, ReedlineEvent::MenuPrevious);
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Enter,
+            ReedlineEvent::Multiple(vec![ReedlineEvent::Esc, ReedlineEvent::Enter]),
+        );
         keybindings.add_binding(
             KeyModifiers::ALT,
             KeyCode::Enter,
             ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
         );
 
+        let tab_pressed = Arc::new(AtomicBool::new(false));
+        let menu_openings = Arc::new(AtomicU64::new(0));
+        let docs = Arc::new(Mutex::new(Docs::default()));
+        let menu = IdeMenu::default()
+            .with_name(COMPLETION_MENU)
+            .with_marker("")
+            // A typed character that can't extend the name (space, `(`, ...) closes it.
+            .with_word_chars("._")
+            .with_default_border()
+            .with_max_completion_height(10)
+            .with_description_mode(DescriptionMode::PreferRight)
+            // Room for a function's usage and the start of its help.
+            .with_max_description_width(60)
+            .with_max_description_height(12);
+
         let mut editor = Reedline::create()
             .with_highlighter(Box::new(RHighlighter::new()))
             .with_validator(Box::new(KernelValidator {
                 client: self.client.clone(),
             }))
-            .with_completer(Box::new(LspCompleter { backend }))
-            .with_menu(ReedlineMenu::EngineCompleter(Box::new(
-                ColumnarMenu::default().with_name("completion_menu").with_marker(""),
-            )))
+            .with_completer(Box::new(LspCompleter::new(backend.clone(), docs.clone(), tab_pressed.clone(), menu_openings.clone())))
+            .with_menu(ReedlineMenu::EngineCompleter(Box::new(CompletionMenu::new(
+                menu,
+                menu_openings,
+                docs,
+                backend.clone(),
+            ))))
+            // Refreshes an open menu as you type; `CompletionMenu` keeps a lone suggestion from being inserted.
             .with_quick_completions(true)
-            .with_partial_completions(true)
+            .with_partial_completions(false)
+            .with_status_line(Box::new(SignatureLine::new(backend)))
             .with_hinter(Box::new(DefaultHinter::default().with_style(Style::new().fg(Color::DarkGray))))
-            .with_edit_mode(Box::new(Emacs::new(keybindings)))
+            .with_edit_mode(Box::new(AutoCompleteMode::new(Emacs::new(keybindings), tab_pressed)))
             .use_bracketed_paste(true)
             .with_break_signal(self.wake.clone());
         if let Some(path) = history_path() {

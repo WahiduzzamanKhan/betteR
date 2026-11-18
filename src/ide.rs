@@ -1,13 +1,14 @@
 //! Channel between the console and its host IDE (the VS Code extension),
 //! carried as JSON lines over a Unix socket the IDE listens on.
 //!
-//! Console -> IDE: `dap_port`, `debug` (start/stop), `complete` requests,
+//! Console -> IDE: `dap_port`, `debug` (start/stop), `complete`, `signature` and `resolve` requests,
 //! plot events (`plot_open`, `plot_update`, `plot_close`, `plot_render_reply`),
 //! interactive output (`show_html_file`, `show_url`, `open_with_system`),
 //! help (`show_help`, `help_topic_reply`), environment explorer
 //! (`variables_event`, `comm_rpc_reply`), data explorers (`comm_open`,
 //! `comm_event`, `comm_closed`) and `prompt_state` after each execution.
 //! IDE -> console: `execute` (code + optional file location), `complete_reply`,
+//! `signature_reply`, `resolve_reply`,
 //! plot requests (`plot_render`, `plot_settings`, `plot_close`), `help_topic`,
 //! `comm_rpc` (a JSON-RPC request on the variables or UI comm, or on a data
 //! explorer by `comm_id`), `comm_close` (a data explorer).
@@ -53,9 +54,15 @@ impl Ide {
                 let Ok(line) = line else { break };
                 let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
                 let Some(ide) = weak.upgrade() else { break };
-                if msg["type"] == "complete_reply" {
+                let reply = match msg["type"].as_str() {
+                    Some("complete_reply") => Some("items"),
+                    Some("signature_reply") => Some("help"),
+                    Some("resolve_reply") => Some("item"),
+                    _ => None,
+                };
+                if let Some(field) = reply {
                     if let Some(tx) = msg["id"].as_u64().and_then(|id| ide.pending.lock().unwrap().remove(&id)) {
-                        let _ = tx.send(msg["items"].clone());
+                        let _ = tx.send(msg[field].clone());
                     }
                 } else if msg["type"]
                     .as_str()
@@ -85,22 +92,22 @@ impl Ide {
         self.plot_requests.lock().unwrap().drain(..).collect()
     }
 
-    /// Asks the IDE's language client for completions. `offset` is a byte
-    /// offset into `text`; returned items use UTF-16 positions.
-    pub fn complete(&self, text: &str, offset: usize) -> Result<Vec<Value>> {
+    /// Asks the IDE's language client about the input: `complete` (the
+    /// completion result) or `signature` (signature help). `offset` is a byte
+    /// offset into `text`; returned positions are UTF-16.
+    pub fn request(&self, kind: &str, text: &str, offset: usize, timeout: Duration) -> Result<Value> {
+        self.request_value(json!({ "type": kind, "text": text, "offset": offset }), timeout)
+    }
+
+    /// Sends `message` with a fresh `id` and waits for the IDE's reply to it.
+    pub fn request_value(&self, mut message: Value, timeout: Duration) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        self.send(json!({ "type": "complete", "id": id, "text": text, "offset": offset }));
-        let items = rx.recv_timeout(Duration::from_secs(3));
+        message["id"] = json!(id);
+        self.send(message);
+        let reply = rx.recv_timeout(timeout);
         self.pending.lock().unwrap().remove(&id);
-        Ok(match items? {
-            Value::Array(items) => items,
-            Value::Object(mut list) => match list.remove("items") {
-                Some(Value::Array(items)) => items,
-                _ => vec![],
-            },
-            _ => vec![],
-        })
+        Ok(reply?)
     }
 }

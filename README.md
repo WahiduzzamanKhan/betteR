@@ -16,7 +16,8 @@ cyl   carb
 ## Features
 
 - **Syntax highlighting** while you type.
-- **Tab completion from your live session**: data frame columns after `$`, functions you've defined, packages, arguments and file paths.
+- **Completion as you type, from your live session**: a pop-up appears once a name has three letters, or straight after `$`, `@` or `::`, with data frame columns, functions you've defined, packages and arguments, each with its package (`{base}`) in a second column. Beside the highlighted suggestion is its help: a function's usage, title and description from its help page, or its signature if it has none. Press Tab to take a suggestion, or for file paths in strings.
+- **Function signatures** under the line while you type a call, with the current argument in bold: `mean(x, trim = 0, `**`na.rm = FALSE`**`, ...)`.
 - **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Alt-Enter inserts a newline.
 - **History** with fish-style suggestions as you type, Ctrl-R reverse search and bracketed paste.
 - **`browser()` and `debug()`** with a `Browse[1]>` prompt. Enter steps, as in R.
@@ -80,8 +81,10 @@ It starts a new R session in the current directory. Quit with **Ctrl-D** or `q()
 
 | Key | Action |
 |---|---|
-| **Tab** / **Shift-Tab** | Open the completion menu and move through it |
-| **Enter** | Run the input, or start a new line if it isn't complete yet |
+| **Tab** | Take the highlighted suggestion, or show suggestions when none are showing |
+| **↑** / **↓** (suggestions showing) | Move through the suggestions |
+| **Esc** | Close the suggestions |
+| **Enter** | Run the input as typed (even with suggestions showing), or start a new line if it isn't complete yet |
 | **Alt-Enter** | Insert a newline without running |
 | **→** (at end of line) | Accept the grey suggestion from history |
 | **↑** / **↓** | Previous / next history entry |
@@ -92,7 +95,8 @@ It starts a new R session in the current directory. Quit with **Ctrl-D** or `q()
 ### Things to try
 
 ```r
-y <- mtcars              # then type  y$  and press Tab
+y <- mtcars              # then type  y$  : the columns pop up; Tab takes one
+mean(1:10,               # the signature shows under the line
 f <- function(x) {       # Enter continues on the next line
   x * 2
 }
@@ -150,8 +154,6 @@ better < analysis.R
 
 ## Limitations
 
-- No signature or help pop-ups while typing yet.
-- Completion menu entries show names only, without descriptions.
 - If the terminal tab is closed while R is running, R stops correctly but a small folder is left in `$TMPDIR`.
 
 ## Development

@@ -9,7 +9,8 @@ How the console is built on ark, and what was learned about ark's protocols alon
 | Feature | How |
 |---|---|
 | Syntax highlighting while typing | tree-sitter-r `HIGHLIGHTS_QUERY`. For overlapping matches, the innermost node wins; for the same node, the later pattern wins. Parse errors are not painted. |
-| Tab completion from the live session (`y$` columns, session-defined functions, packages, files) | Ark LSP `textDocument/completion` against a virtual `untitled:` document that mirrors the input buffer. Functions insert `name(`. |
+| Completion as you type, from the live session (`y$` columns, session-defined functions, packages, files) | Ark LSP `textDocument/completion` against a virtual `untitled:` document that mirrors the input buffer. Functions insert `name(`. Shown in reedline's `IdeMenu`, with each item's package as a second column (padded into its display text) and its help beside the list; see *Completion as you type* below. |
+| Signature of the call around the cursor | Ark LSP `textDocument/signatureHelp`, drawn on reedline's status line below the input, with the active parameter in bold. |
 | Multi-line input with `+ ` continuation | reedline `Validator` → Jupyter `is_complete_request` (R's own parser decides) |
 | `readline()` / `menu()` | Jupyter `input_request` on stdin. Shell and stdin share one ZeroMQ identity so ark routes input requests to us. |
 | `browser()` / `debug()` | The prompt switches to `Browse[N]>`. An empty line steps, as in R. |
@@ -49,10 +50,20 @@ Ark findings:
 
 Watching IOPub from a reedline *idle callback* would make reedline re-query the cursor position on every repaint, and leave raw mode on while it waits for the answer. That's why it's a separate thread that only `try_lock`s the client.
 
+## Completion as you type
+
+Reedline has no option for completing as you type, so the console assembles it:
+
+- **Trigger.** An edit-mode wrapper (`AutoCompleteMode`) follows every typed name character, `$`, `@` and `:` with a `Menu` event. The completer decides whether there's anything worth showing: a name of three or more characters, or right after `$`, `@` or `::`, and never inside a string or comment. Tab asks explicitly, so shorter prefixes and file paths in strings work. That holds until the menu Tab opened closes. The menu counts its openings so the completer can tell one from the next.
+- **Keys.** Tab is `UntilFound([MenuAccept, Menu])`: take the highlighted suggestion, or open the menu. Enter is `Multiple([Esc, Enter])`, so it always runs the line as typed. The menu closes when a typed character can't extend the name (`with_word_chars("._")`).
+- **The menu** (`QuietMenu` around `IdeMenu`) closes instead of showing "NO RECORDS FOUND". Reedline's quick completions are on, so typing refreshes an open menu at once and a Tab arriving in the same burst of input takes a current suggestion. Quick completions would also insert a menu's only suggestion as it opens (`mea` would become `mean(`), so `QuietMenu` refuses that check once per opening and lets the menu load its values when drawn.
+- **Help beside each suggestion.** Ark sends a suggestion's help only when asked about it (`completionItem/resolve`), and reedline's `IdeMenu` shows a description set when the suggestions were listed. So `CompletionMenu` mirrors the selection (the menu doesn't expose it: one move per draw, wrapping at the ends). When the selected suggestion has no help yet, it fetches it, keeps it by item, and has the menu list its suggestions again (from the completer's cache, now with the help), stepping back to the selection. The description is one flowing paragraph, because the box re-wraps on whitespace: the function's usage lines from the help page's Usage section (only those for that function, since a page can document several), then the title and the Description section. A function without a help page (one defined in the session, or an S3 method listed under its generic) gets its signature from signature help instead. Fetching blocks drawing: about 0.1 s per item standalone, longer the first time.
+- **Speed.** Ark's answer for a word is cached and narrowed locally as the word grows, unless ark marks it incomplete. So typing a name asks once, not once per letter. Completion as you type gives up after 800 ms rather than stall typing.
+- **Signatures.** Ark only finds a call that's closed, as it always is in an editor that pairs brackets. So the status line asks about the input with its open brackets (and any open string) closed at the end. It asks again only when the call or the argument changes, and gives up after 500 ms. Hosted, completion, help and signature requests go through the extension's LSP client (`complete`, `resolve` and `signature` on `ide.sock`).
+
 ## Known limitations / next steps
 
-- No signature or help popups in the console yet (ark offers `signatureHelp` and `hover`).
-- The completion menu has no descriptions. They would force a single column; an `IdeMenu` popup could add them back.
+- While the suggestions are open, every keystroke costs a cursor-position query to the terminal (reedline re-anchors the prompt around any host completer, see reedline #1130). Instant locally; one round trip each over a slow remote link.
 - Password `input_request`s use a minimal no-echo reader.
 - If the terminal is hung up (tab closed), ark exits with it, but the temp dir (`$TMPDIR/better-<pid>`) is left behind.
 - Ark log: removed after a clean exit, kept after a crash, and kept whenever `--log` is passed.

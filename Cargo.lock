@@ -519,6 +519,7 @@ dependencies = [
  "streaming-iterator",
  "tree-sitter",
  "tree-sitter-r",
+ "unicode-width",
  "uuid",
  "zmq",
 ]

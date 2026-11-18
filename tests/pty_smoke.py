@@ -60,6 +60,26 @@ class Term:
             return False
         return False
 
+    def idle(self, seconds):
+        """Waits like a user would, answering cursor-position queries as a real terminal does."""
+        end = time.time() + seconds
+        while time.time() < end:
+            try:
+                chunk = self.p.read_nonblocking(65536, timeout=0.05)
+            except pexpect.TIMEOUT:
+                continue
+            except pexpect.EOF:
+                return
+            self.raw += chunk
+            for _ in range(chunk.count("\x1b[6n")):
+                self.p.send("\x1b[1;1R")
+
+    def clear_line(self):
+        """Closes any completion menu and empties the input line."""
+        self.p.send("\x1b")
+        self.p.send("\x15")
+        self.idle(0.5)
+
     def run(self, line, until=None, timeout=30):
         """Sends a line; by default waits until reedline is reading the next top-level line."""
         self.raw = ""
@@ -99,16 +119,75 @@ check("multiline function works", ok and "[1] 2" in out, out)
 t.run("y <- mtcars")
 t.raw = ""
 t.p.send("y$cy\t")
-time.sleep(1.5)
+t.idle(1.5)
 ok, out = t.run("")
 check("tab completes live data frame column (y$cy -> y$cyl)", "y$cyl" in out and "[1] 6 6 4" in out, out)
 
 t.run("print_me_please <- function(a, b = 2) a + b")
 t.raw = ""
 t.p.send("print_me\t")
-time.sleep(1.5)
+t.idle(1.5)
 ok, out = t.run("1)")
 check("tab completes session-defined function", ok and "[1] 3" in out, out)
+
+# Completion as you type: a popup after three characters of a name (or right
+# after `$`, `@`, `::`), with what each suggestion is; Tab takes one, Enter
+# always runs the line as typed.
+MENU = "╭"
+t.raw = ""
+t.p.send("print_m")
+t.idle(1.5)
+out = ANSI.sub("", t.raw)
+check("completion pops up as you type", MENU in t.raw and "print_me_please" in out, out)
+# A function without a help page is described by its signature.
+check("suggestion without help shows its signature", "print_me_please(a, b = 2)" in out, out)
+t.clear_line()
+
+# Beside a suggestion: its help, fetched as it's selected.
+t.raw = ""
+t.p.send("base::mea")
+t.idle(2)
+out = ANSI.sub("", t.raw)
+check("suggestions list their package in a second column", re.search(r"│mean +\{base\}│", out) is not None, out[-600:])
+check("suggestion shows its help page", "mean(x, trim = 0, na.rm = FALSE, ...)" in out and "Arithmetic Mean" in out, out[-600:])
+t.raw = ""
+t.p.send("\x1b[B")
+t.idle(1.5)
+check("next suggestion shows its own help", "Date Class" in ANSI.sub("", t.raw), ANSI.sub("", t.raw)[-600:])
+t.clear_line()
+
+t.raw = ""
+t.p.send("pr")
+t.idle(1)
+check("no popup for a one- or two-letter name", MENU not in t.raw, ANSI.sub("", t.raw))
+t.clear_line()
+
+t.raw = ""
+t.p.send('paste("print_m')
+t.idle(1)
+check("no popup inside a string", MENU not in t.raw, ANSI.sub("", t.raw))
+t.clear_line()
+
+t.raw = ""
+t.p.send("y$")
+t.idle(1.5)
+check("popup right after $", MENU in t.raw and "mpg" in ANSI.sub("", t.raw), ANSI.sub("", t.raw))
+t.clear_line()
+
+t.raw = ""
+t.p.send("print_m")
+t.idle(1.5)
+ok, out = t.run("")
+check("Enter runs the line, not the suggestion", ok and "print_m" in out and "not found" in out, out)
+
+# The signature of the call around the cursor, below the input.
+t.raw = ""
+t.p.send("print_me_please(1, ")
+t.idle(1.5)
+out = ANSI.sub("", t.raw)
+check("signature shown under the input", "print_me_please(a, b = 2)" in out, out)
+check("current argument highlighted", "\x1b[1mb = 2" in t.raw, t.raw[-300:])
+t.clear_line()
 
 ok, out = t.run('name <- readline("Name? ")', until=(r"Name\? ",))
 check("readline() input_request prompt", ok, out)
@@ -133,11 +212,12 @@ check("plot drawn inline (iTerm2 image protocol)", ok and "\x1b]1337;File=inline
 
 t.raw = ""
 t.p.send("Sys.sleep(30); print('not interrupted')\r")
-time.sleep(1.5)
+t.idle(1.5)
+t.raw = ""
 start = time.time()
 t.p.send("\x03")
 ok = t.expect(READY, timeout=10)
-check("Ctrl-C interrupts running R code", ok and time.time() - start < 5 and "not interrupted" not in t.raw,
+check("Ctrl-C interrupts running R code", ok and time.time() - start < 5 and '[1] "not interrupted"' not in t.raw,
       ANSI.sub("", t.raw))
 
 ok, out = t.run("x")
