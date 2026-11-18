@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -37,14 +37,42 @@ jobs:
         run: cargo test --locked
 
       - uses: astral-sh/setup-uv@v6
+        if: runner.os != 'Windows'
 
+      # pexpect needs a Unix PTY; the Windows console is tested in a later step.
       - name: End-to-end tests (PTY)
+        if: runner.os != 'Windows'
         run: uv run --with pexpect python tests/pty_smoke.py
 
+      # Without a PTY: piped input runs through a whole session (kernel start,
+      # execute, shutdown). Checks that R runs in UTF-8, which needs the
+      # application manifest embedded in better.exe, and that non-ASCII
+      # input arrives as one character and prints back intact.
+      - name: Piped session (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          out=$(printf '%s\n' \
+            'cat("utf8:", l10n_info()[["UTF-8"]], "\n")' \
+            'x <- "é"; cat("chars:", nchar(x), utf8ToInt(x), x, "\n")' \
+            | ./target/debug/better.exe)
+          echo "$out"
+          grep -qF "utf8: TRUE" <<<"$out"
+          grep -qF "chars: 1 233 é" <<<"$out"
+
       - name: Kernel logs
-        if: failure()
+        if: failure() && runner.os != 'Windows'
         run: |
           for f in "${TMPDIR:-/tmp}"/better-*/ark.log; do
             [ -f "$f" ] && { echo "::group::$f"; cat "$f"; echo "::endgroup::"; }
           done
           true
+
+      - name: Kernel logs (Windows)
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem $env:TEMP -Directory -Filter 'better-*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'ark.log' } |
+            Where-Object { Test-Path $_ } |
+            ForEach-Object { "::group::$_"; Get-Content $_; "::endgroup::" }
