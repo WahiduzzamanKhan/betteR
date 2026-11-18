@@ -40,3 +40,11 @@ jobs:
 
       - name: End-to-end tests (PTY)
         run: uv run --with pexpect python tests/pty_smoke.py
+
+      - name: Kernel logs
+        if: failure()
+        run: |
+          for f in "${TMPDIR:-/tmp}"/better-*/ark.log; do
+            [ -f "$f" ] && { echo "::group::$f"; cat "$f"; echo "::endgroup::"; }
+          done
+          true
