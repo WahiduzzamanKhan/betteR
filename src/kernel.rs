@@ -117,17 +117,26 @@ pub fn spawn(program: &KernelProgram, log_file: Option<PathBuf>) -> Result<(Spaw
     let auto_log = log_file.is_none();
     let log_file = log_file.unwrap_or_else(|| dir.join("ark.log"));
 
-    let child = program
-        .command()?
+    let mut command = program.command()?;
+    command
         .arg("--connection_file")
         .arg(&connection_file)
         .args(["--session-mode", "console", "--log"])
         .arg(&log_file)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("launching the R kernel")?;
+        .stderr(Stdio::null());
+    // Ctrl-C in a Windows console goes to every process attached to it, and
+    // nothing in the kernel handles it, so it would end the kernel. A new
+    // process group ignores it. The console turns Ctrl-C into an
+    // `interrupt_request` instead, just as on Unix, where ark blocks SIGINT.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+    let child = command.spawn().context("launching the R kernel")?;
 
     Ok((
         SpawnedKernel {

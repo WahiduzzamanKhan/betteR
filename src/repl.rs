@@ -604,14 +604,10 @@ impl Repl {
     /// Standalone: interactive output (htmlwidgets, Shiny, help, files) goes to
     /// `$BROWSER`, or the system's default opener.
     fn open_externally(&mut self, target: &str, title: &str) {
-        let default = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-        let opener = std::env::var("BROWSER").ok().filter(|b| !b.is_empty()).unwrap_or(default.into());
-        let ok = std::process::Command::new(opener)
-            .arg(target)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
+        let ok = match std::env::var("BROWSER").ok().filter(|b| !b.is_empty()) {
+            Some(browser) => run_quietly(&browser, target),
+            None => open_with_system(target),
+        };
         self.clear_prompt();
         self.finish_line();
         let note = if ok {
@@ -956,6 +952,30 @@ impl Repl {
             },
         }
     }
+}
+
+/// Runs `program target` without showing its output; true if it succeeded.
+fn run_quietly(program: &str, target: &str) -> bool {
+    std::process::Command::new(program)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Opens a URL or file with the system's default handler.
+#[cfg(not(windows))]
+fn open_with_system(target: &str) -> bool {
+    run_quietly(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }, target)
+}
+
+/// Opens a URL or file with the system's default handler. Not `cmd /C start`:
+/// cmd.exe would parse the target, and a `&` in a URL starts a new command.
+/// The `open` crate passes it to PowerShell as data (an environment variable).
+#[cfg(windows)]
+fn open_with_system(target: &str) -> bool {
+    open::that(target).is_ok()
 }
 
 fn terminal_width() -> u16 {

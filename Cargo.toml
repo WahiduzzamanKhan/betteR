@@ -31,6 +31,12 @@ amalthea = { git = "https://github.com/posit-dev/ark", rev = "042c3695d124e0d452
 streaming-iterator = "0.1.9"
 unicode-width = "0.2.3"
 
+[target.'cfg(windows)'.dependencies]
+# For `--standard-dll-search-order` (conda R); same pinned commit as ark.
+harp = { git = "https://github.com/posit-dev/ark", rev = "042c3695d124e0d452e6fdcdd213ea87a5b179ad" }
+# Opens URLs and files with ShellExecute, without going through cmd.exe.
+open = "5"
+
 [build-dependencies]
 # Windows application manifest (UTF-8 code page); see build.rs. Same version as ark's.
 embed-resource = "3.0.12"

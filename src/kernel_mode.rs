@@ -25,6 +25,11 @@ pub fn run() -> Result<()> {
     let mut log_file = None;
     let mut session_mode = SessionMode::Console;
     let mut record_startup = true;
+    // Conda's R needs Windows' standard DLL search order (which includes `PATH`)
+    // to find its libraries. Ark's flag, or this variable so that a console or
+    // the VS Code extension can ask for it without knowing the kernel's arguments.
+    #[cfg(windows)]
+    let mut standard_dll_search = std::env::var("BETTER_STANDARD_DLL_SEARCH").is_ok_and(|v| v == "1");
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
         let mut value = || args.next().with_context(|| format!("{arg} needs a value"));
@@ -34,6 +39,8 @@ pub fn run() -> Result<()> {
             "--log" => log_file = Some(value()?),
             // From a console that starts its own kernel; see `startup`.
             "--no-startup-record" => record_startup = false,
+            #[cfg(windows)]
+            "--standard-dll-search-order" => standard_dll_search = true,
             "--session-mode" => {
                 session_mode = match value()?.as_str() {
                     "console" => SessionMode::Console,
@@ -57,6 +64,11 @@ pub fn run() -> Result<()> {
         if let Ok(info) = crate::jupyter::ConnectionInfo::read(std::path::Path::new(&connection_file)) {
             crate::startup::record(&info, std::path::Path::new(&connection_file));
         }
+    }
+    // Before R's libraries are loaded, as in ark's `main`.
+    #[cfg(windows)]
+    if standard_dll_search {
+        harp::sys::library::set_use_standard_dll_search_path(true);
     }
     // Same R arguments as ark: no workspace save/restore prompts.
     let r_args = vec!["--no-save".into(), "--no-restore-data".into(), "--interactive".into()];

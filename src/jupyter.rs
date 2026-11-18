@@ -210,7 +210,8 @@ impl KernelClient {
         let header = json!({
             "msg_id": msg_id,
             "session": self.session,
-            "username": std::env::var("USER").unwrap_or_else(|_| "user".into()),
+            // `USER` on Unix, `USERNAME` on Windows.
+            "username": std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".into()),
             "date": chrono::Utc::now().to_rfc3339(),
             "msg_type": msg_type,
             "version": PROTOCOL_VERSION,

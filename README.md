@@ -144,6 +144,7 @@ better < analysis.R
 | `BETTER_INLINE_IMAGES` | `iterm`, `kitty` or `none`: overrides inline-image detection |
 | `BETTER_HISTORY` | History file (default: `~/Library/Application Support/better/history.txt` on macOS, `~/.local/share/better/history.txt` on Linux) |
 | `BROWSER` | Program used to open help pages, htmlwidgets and apps |
+| `BETTER_STANDARD_DLL_SEARCH` | Windows only: `1` loads R's libraries with the standard DLL search order (which includes `PATH`), as conda's R needs |
 | `R_HOME` | Which R installation to use (default: the `R` on your `PATH`) |
 
 ## Troubleshooting
