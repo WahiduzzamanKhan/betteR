@@ -24,6 +24,7 @@ pub fn run() -> Result<()> {
     let mut connection_file = None;
     let mut log_file = None;
     let mut session_mode = SessionMode::Console;
+    let mut record_startup = true;
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
         let mut value = || args.next().with_context(|| format!("{arg} needs a value"));
@@ -31,6 +32,8 @@ pub fn run() -> Result<()> {
             // ark's own spelling is accepted too, so callers can treat both alike.
             "--connection-file" | "--connection_file" | "-f" => connection_file = Some(value()?),
             "--log" => log_file = Some(value()?),
+            // From a console that starts its own kernel; see `startup`.
+            "--no-startup-record" => record_startup = false,
             "--session-mode" => {
                 session_mode = match value()?.as_str() {
                     "console" => SessionMode::Console,
@@ -50,8 +53,10 @@ pub fn run() -> Result<()> {
 
     let (connection, registration) = amalthea::kernel::read_connection(&connection_file);
     // Before R starts, so `.Rprofile` output is caught for consoles that attach later.
-    if let Ok(info) = crate::jupyter::ConnectionInfo::read(std::path::Path::new(&connection_file)) {
-        crate::startup::record(&info, std::path::Path::new(&connection_file));
+    if record_startup {
+        if let Ok(info) = crate::jupyter::ConnectionInfo::read(std::path::Path::new(&connection_file)) {
+            crate::startup::record(&info, std::path::Path::new(&connection_file));
+        }
     }
     // Same R arguments as ark: no workspace save/restore prompts.
     let r_args = vec!["--no-save".into(), "--no-restore-data".into(), "--interactive".into()];

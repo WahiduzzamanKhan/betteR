@@ -6,6 +6,12 @@
 //! `better --kernel` therefore subscribes to its own IOPub before R starts and
 //! records stream output, up to the first execution, in a file next to the
 //! connection file. A console that attaches replays it.
+//!
+//! Not when a console starts its own kernel (`--no-startup-record`). Ark starts
+//! R only once its first IOPub subscriber has connected, so early output isn't
+//! dropped. A recorder would be that first subscriber and start R while the
+//! console might still be connecting, losing what `.Rprofile` prints. Without
+//! one, the console itself is first and sees all of it live.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};

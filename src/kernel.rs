@@ -80,7 +80,11 @@ impl KernelProgram {
         Ok(match self {
             Self::BuiltIn => {
                 let mut cmd = Command::new(std::env::current_exe().context("locating the better binary")?);
-                cmd.arg("--kernel");
+                // This console is the session's first IOPub subscriber, and ark
+                // starts R only once that subscriber is connected, so it sees
+                // `.Rprofile` output live. A recorder would subscribe first and
+                // start R before the console is listening.
+                cmd.args(["--kernel", "--no-startup-record"]);
                 cmd
             },
             Self::External(path) => Command::new(path),
