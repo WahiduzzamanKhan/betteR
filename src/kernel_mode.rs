@@ -14,6 +14,9 @@ pub fn requested() -> bool {
 
 /// Never returns on success: ark runs R's event loop until the session ends.
 pub fn run() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    ensure_r_lib_on_loader_path()?;
+
     // Both must happen on the main thread before any other thread exists.
     ark::panic::mark_r_thread();
     ark::signals::initialize_signal_block();
@@ -54,4 +57,36 @@ pub fn run() -> Result<()> {
     let r_args = vec!["--no-save".into(), "--no-restore-data".into(), "--interactive".into()];
     ark::start::start_kernel(connection, registration, r_args, None, session_mode, true, DefaultRepos::Auto);
     Ok(())
+}
+
+/// R's package libraries (e.g. `utils.so`) link to `libR.so` by name, and on
+/// Linux the loader finds it only via `LD_LIBRARY_PATH`, which R's own launcher
+/// sets and ark expects its caller to set. The loader reads it at process
+/// start, so if `$R_HOME/lib` is missing, add it and restart this process.
+#[cfg(target_os = "linux")]
+fn ensure_r_lib_on_loader_path() -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::path::PathBuf;
+
+    let r_home = match std::env::var_os("R_HOME").filter(|h| !h.is_empty()) {
+        Some(home) => PathBuf::from(home),
+        None => match std::process::Command::new("R").arg("RHOME").output() {
+            Ok(out) if out.status.success() => PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()),
+            // ark reports a missing R itself.
+            _ => return Ok(()),
+        },
+    };
+    let lib = r_home.join("lib");
+    let current = std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&current).filter(|p| !p.as_os_str().is_empty()).collect();
+    if paths.contains(&lib) {
+        return Ok(());
+    }
+    paths.insert(0, lib);
+    let err = std::process::Command::new(std::env::current_exe().context("locating the better binary")?)
+        .args(std::env::args_os().skip(1))
+        .env("LD_LIBRARY_PATH", std::env::join_paths(paths)?)
+        .env("R_HOME", &r_home)
+        .exec();
+    Err(err).context("restarting the kernel with R's library path")
 }
