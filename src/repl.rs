@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use nu_ansi_term::{Color, Style};
 use reedline::{
-    default_emacs_keybindings, DefaultHinter, DescriptionMode, EditCommand, Emacs, FileBackedHistory, Highlighter, IdeMenu,
+    default_emacs_keybindings, DefaultHinter, EditCommand, Emacs, FileBackedHistory, Highlighter, IdeMenu,
     HistoryItem, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline,
     ReedlineEvent, ReedlineMenu, Signal, ValidationResult, Validator,
 };
@@ -375,11 +375,7 @@ impl Repl {
             // A typed character that can't extend the name (space, `(`, ...) closes it.
             .with_word_chars("._")
             .with_default_border()
-            .with_max_completion_height(10)
-            .with_description_mode(DescriptionMode::PreferRight)
-            // Room for a function's usage and the start of its help.
-            .with_max_description_width(60)
-            .with_max_description_height(12);
+            .with_max_completion_height(10);
 
         let mut editor = Reedline::create()
             .with_highlighter(Box::new(RHighlighter::new()))

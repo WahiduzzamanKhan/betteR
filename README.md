@@ -16,7 +16,7 @@ cyl   carb
 ## Features
 
 - **Syntax highlighting** while you type.
-- **Completion as you type, from your live session**: a pop-up appears once a name has three letters, or straight after `$`, `@` or `::`, with data frame columns, functions you've defined, packages and arguments, each with its package (`{base}`) in a second column. Beside the highlighted suggestion is its help: a function's usage, title and description from its help page, or its signature if it has none. Press Tab to take a suggestion, or for file paths in strings.
+- **Completion as you type, from your live session**: a pop-up appears once a name has three letters, or straight after `$`, `@` or `::`, with data frame columns, functions you've defined, packages and arguments, each with its package (`{base}`) in a second column. Beside the highlighted suggestion is its help, laid out with line breaks and colour: a function's usage, title, description and arguments from its help page, or its signature if it has none. Press Tab to take a suggestion, or for file paths in strings.
 - **Function signatures** under the line while you type a call, with the current argument in bold: `mean(x, trim = 0, `**`na.rm = FALSE`**`, ...)`.
 - **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Alt-Enter inserts a newline.
 - **History** with fish-style suggestions as you type, Ctrl-R reverse search and bracketed paste.

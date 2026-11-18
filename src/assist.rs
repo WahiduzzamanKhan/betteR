@@ -15,7 +15,8 @@ use reedline::{
 };
 use serde_json::Value;
 
-use crate::lsp::CompletionBackend;
+use crate::help_box::{beside, help_from_markdown, render_box, visible_width, wrap, Help, Side, Span, BOX_FRAME};
+use crate::lsp::{kind_label, CompletionBackend};
 
 pub const COMPLETION_MENU: &str = "completion_menu";
 
@@ -196,15 +197,14 @@ impl<M: EditMode> EditMode for AutoCompleteMode<M> {
     }
 }
 
-/// Help for the suggestions in the completion menu, shared by the completer
-/// (which shows what's known) and the menu (which fetches it for the
-/// selected suggestion).
+/// The completion items behind the menu's suggestions (recorded by the
+/// completer) and their help (fetched by the menu as they're selected).
 #[derive(Default)]
 pub struct Docs {
     /// The LSP item behind each suggestion the completer last returned, in order.
     pub items: Vec<Value>,
-    /// The description for each item fetched so far, by [`doc_key`].
-    pub text: HashMap<String, String>,
+    /// The help for each item fetched so far, by [`doc_key`].
+    pub help: HashMap<String, Help>,
 }
 
 pub type SharedDocs = Arc<Mutex<Docs>>;
@@ -238,11 +238,13 @@ enum Move {
 ///   menu that opens with one suggestion would also accept it: typing `mea`
 ///   would become `mean(`. So the quick-completion check is refused once, as
 ///   the menu opens, and the menu loads its values when it's next drawn.
-/// - The description beside the selected suggestion is its help: the
-///   function's usage, title and description from its help page, or its
-///   signature if it has none. ark sends help only for an item asked about
-///   (`completionItem/resolve`), so it's fetched as a suggestion is selected,
-///   then kept.
+/// - Beside the list is the selected suggestion's help: from its help page
+///   the function's usage, the title, description and arguments, with line
+///   breaks and colours; or its signature if it has no help page. ark sends
+///   help only for an item asked about (`completionItem/resolve`), so it's
+///   fetched as a suggestion is selected, then kept. Reedline's own
+///   description box can't show it (it re-wraps text on whitespace and
+///   counts escape codes as text), so this draws the box itself.
 pub struct CompletionMenu<M: Menu> {
     inner: M,
     opening: Cell<bool>,
@@ -255,11 +257,35 @@ pub struct CompletionMenu<M: Menu> {
     /// doesn't say), and the last move sent but not yet applied.
     selected: Option<usize>,
     pending: Option<Move>,
+    /// The help box as laid out for the next draw.
+    help_box: Option<HelpBox>,
 }
+
+/// The selected suggestion's help, wrapped to fit beside the list.
+struct HelpBox {
+    lines: Vec<Vec<Span>>,
+    side: Side,
+}
+
+/// Widest the help box gets, border included.
+const HELP_MAX_WIDTH: usize = 76;
+/// Narrower than this, there's no room for a useful help box.
+const HELP_MIN_WIDTH: usize = 28;
+/// Tallest the help box gets, border included.
+const HELP_MAX_ROWS: usize = 16;
 
 impl<M: Menu> CompletionMenu<M> {
     pub fn new(inner: M, openings: Arc<AtomicU64>, docs: SharedDocs, backend: CompletionBackend) -> Self {
-        Self { inner, opening: Cell::new(false), openings, docs, backend, selected: Some(0), pending: None }
+        Self {
+            inner,
+            opening: Cell::new(false),
+            openings,
+            docs,
+            backend,
+            selected: Some(0),
+            pending: None,
+            help_box: None,
+        }
     }
 
     /// Keeps `openings` odd exactly while the menu is open.
@@ -294,64 +320,98 @@ impl<M: Menu> CompletionMenu<M> {
         };
     }
 
-    /// Fetches help for the selected suggestion if it has none yet, and
-    /// reloads the menu (keeping the selection) to show it.
-    fn describe_selected(&mut self, editor: &mut Editor, completer: &mut dyn Completer, painter: &Painter) {
+    /// Fetches help for the selected suggestion if it has none yet.
+    fn fetch_selected_help(&mut self, editor: &Editor) {
         let Some(selected) = self.selected.filter(|&i| i < self.inner.get_values().len()) else {
             return;
         };
         let item = {
             let docs = self.docs.lock().unwrap();
             match docs.items.get(selected) {
-                Some(item) if !docs.text.contains_key(&doc_key(item)) => item.clone(),
+                Some(item) if !docs.help.contains_key(&doc_key(item)) => item.clone(),
                 _ => return,
             }
         };
         let namespace = namespace_before(editor.get_buffer(), self.inner.get_values()[selected].span.start);
-        let text = self.help_text(&item, namespace.as_deref());
+        let help = self.help_for(&item, namespace.as_deref());
         // Kept even when empty, so nothing is asked twice.
-        self.docs.lock().unwrap().text.insert(doc_key(&item), text.clone());
-        if text.is_empty() {
-            return;
-        }
-        // The completer adds the help as it lists the suggestions again
-        // (from its cache), which resets the selection: step back to it.
-        self.inner.update_values(editor, completer);
-        for _ in 0..selected {
-            self.inner.menu_event(MenuEvent::NextElement);
-            self.inner.update_working_details(editor, completer, painter);
-        }
-        self.inner.update_working_details(editor, completer, painter);
+        self.docs.lock().unwrap().help.insert(doc_key(&item), help);
     }
 
-    /// The description for `item`: from its help page if it has one,
-    /// otherwise its signature (functions only).
-    fn help_text(&self, item: &Value, namespace: Option<&str>) -> String {
+    /// The help for `item`: from its help page if it has one, with its
+    /// signature in place of a usage it doesn't list (functions only).
+    fn help_for(&self, item: &Value, namespace: Option<&str>) -> Help {
         let label = item["label"].as_str().unwrap_or_default();
         let resolved = self.backend.resolve(item, RESOLVE_TIMEOUT).ok();
         let markdown = resolved.as_ref().and_then(|r| {
             r["documentation"]["value"].as_str().or_else(|| r["documentation"].as_str()).map(str::to_string)
         });
-        let help = markdown.as_deref().map(|md| help_summary(label, md)).unwrap_or_default();
+        let help = markdown.as_deref().map(|md| help_from_markdown(label, md)).unwrap_or_default();
         let is_function = matches!(item["kind"].as_u64(), Some(2 | 3));
         if !is_function || help.has_usage {
-            return help.text;
+            return help;
         }
-        // No usage from a help page (e.g. a function defined in the session):
-        // ask for its signature instead.
+        // No usage on a help page (a function defined in the session, an S3
+        // method listed under its generic): ask for its signature instead.
         let call = format!("{}{label}()", namespace.map(|ns| format!("{ns}::")).unwrap_or_default());
-        // ark labels the signature with the call as written: drop the `pkg::`.
         let signature = self
             .backend
             .signature(&call, call.len() - 1, RESOLVE_TIMEOUT)
             .ok()
             .and_then(|h| h["signatures"][0]["label"].as_str().map(str::to_string))
-            .map(|label| label.split_once("::").filter(|(ns, _)| !ns.contains('(')).map_or(label.clone(), |(_, rest)| rest.trim_start_matches(':').to_string()));
-        match signature {
-            Some(signature) if help.text.is_empty() => signature,
-            Some(signature) => format!("{signature}  —  {}", help.text),
-            None => help.text,
+            // ark labels the signature with the call as written: drop the `pkg::`.
+            .map(|label| {
+                label
+                    .split_once("::")
+                    .filter(|(ns, _)| !ns.contains('('))
+                    .map_or(label.clone(), |(_, rest)| rest.trim_start_matches(':').to_string())
+            });
+        help.with_usage(signature.as_slice())
+    }
+
+    /// Lays out the selected suggestion's help beside the list: on the right
+    /// if it fits there, otherwise in the room left of the list.
+    fn lay_out_help(&mut self, painter: &Painter) {
+        self.help_box = None;
+        let Some(selected) = self.selected.filter(|&i| i < self.inner.get_values().len()) else {
+            return;
+        };
+        let help = {
+            let docs = self.docs.lock().unwrap();
+            let Some(item) = docs.items.get(selected) else { return };
+            match docs.help.get(&doc_key(item)) {
+                Some(help) if !help.is_empty() => help.clone(),
+                // Until its help arrives, or if it has none: what it is.
+                _ => match kind_label(item) {
+                    Some(kind) => Help::note(&kind),
+                    None => return,
+                },
+            }
+        };
+        let list = self.inner.menu_string(u16::MAX, false);
+        let rows: Vec<&str> = list.split("\r\n").collect();
+        let right_edge = rows.iter().map(|r| visible_width(r.trim_end())).max().unwrap_or(0);
+        let indent = rows.iter().map(|r| r.len() - r.trim_start_matches(' ').len()).min().unwrap_or(0);
+        let screen = painter.screen_width() as usize;
+        let room_right = screen.saturating_sub(right_edge + 1);
+        let room_left = indent.saturating_sub(1);
+        let (side, room) = if room_right >= HELP_MIN_WIDTH || room_right >= room_left {
+            (Side::Right, room_right)
+        } else {
+            (Side::Left, room_left)
+        };
+        let width = room.min(HELP_MAX_WIDTH);
+        if width < HELP_MIN_WIDTH.min(16) + BOX_FRAME {
+            return;
         }
+        let lines = wrap(&help, width - BOX_FRAME);
+        if !lines.is_empty() {
+            self.help_box = Some(HelpBox { lines, side });
+        }
+    }
+
+    fn help_rows(&self) -> usize {
+        self.help_box.as_ref().map_or(0, |b| (b.lines.len() + 2).min(HELP_MAX_ROWS))
     }
 }
 
@@ -361,91 +421,6 @@ fn namespace_before(text: &str, start: usize) -> Option<String> {
     let before = before.strip_suffix(':').unwrap_or(before);
     let ns: String = before.chars().rev().take_while(|&c| is_ident(c)).collect::<Vec<_>>().into_iter().rev().collect();
     (!ns.is_empty()).then_some(ns)
-}
-
-#[derive(Default)]
-pub struct HelpSummary {
-    /// One flowing paragraph (the description box re-wraps its text).
-    pub text: String,
-    /// Whether it starts with the function's usage.
-    pub has_usage: bool,
-}
-
-/// What fits beside a suggestion, from ark's Markdown rendering of its help
-/// page: the usage of `name` (a help page may document several functions),
-/// the page's title and its description.
-pub fn help_summary(name: &str, markdown: &str) -> HelpSummary {
-    let mut title = String::new();
-    let mut sections: Vec<(String, Vec<&str>)> = Vec::new();
-    let mut in_code = false;
-    for line in markdown.lines() {
-        if line.starts_with("```") {
-            in_code = !in_code;
-        }
-        // In code, `## Default S3 method:` is an R comment, not a heading.
-        let heading = |prefix: &str| if in_code { None } else { line.strip_prefix(prefix) };
-        if let Some(t) = heading("## ").filter(|_| title.is_empty()) {
-            title = t.trim().to_string();
-        } else if let Some(h) = heading("### ") {
-            sections.push((h.trim().to_string(), Vec::new()));
-        } else if let Some((_, lines)) = sections.last_mut() {
-            lines.push(line);
-        }
-    }
-    let section = |name: &str| sections.iter().find(|(h, _)| h == name).map(|(_, l)| l.as_slice()).unwrap_or(&[]);
-
-    // Usage entries for `name`, each kept whole across continuation lines.
-    let mut usages: Vec<String> = Vec::new();
-    let mut current: Option<(String, i32)> = None;
-    for line in section("Usage").iter().filter(|l| !l.starts_with("```")) {
-        if current.is_none() && line.trim_start().starts_with(&format!("{name}(")) {
-            current = Some((String::new(), 0));
-        }
-        if let Some((text, depth)) = current.as_mut() {
-            text.push(' ');
-            text.push_str(line.trim());
-            *depth += line.matches('(').count() as i32 - line.matches(')').count() as i32;
-            if *depth <= 0 {
-                usages.push(flow(text));
-                current = None;
-            }
-        }
-    }
-    let description = flow(&section("Description").join(" "));
-    let about = match (title.is_empty(), description.is_empty()) {
-        (false, false) => format!("{}: {description}", flow(&title)),
-        (false, true) => flow(&title),
-        (true, _) => description,
-    };
-    let has_usage = !usages.is_empty();
-    let mut parts = usages;
-    if !about.is_empty() {
-        parts.push(about);
-    }
-    HelpSummary { text: parts.join("  —  "), has_usage }
-}
-
-/// Markdown made plain and on one line.
-fn flow(text: &str) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    // Links: keep their text.
-    while let Some(open) = rest.find('[') {
-        match rest[open..].find("](").and_then(|m| rest[open + m..].find(')').map(|c| (m, open + m + c))) {
-            Some((mid, close)) => {
-                out.push_str(&rest[..open]);
-                out.push_str(&rest[open + 1..open + mid]);
-                rest = &rest[close + 1..];
-            },
-            None => {
-                out.push_str(&rest[..=open]);
-                rest = &rest[open + 1..];
-            },
-        }
-    }
-    out.push_str(rest);
-    let out = out.replace('`', "").replace("**", "").replace("\\_", "_").replace("\\*", "*");
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 impl<M: Menu> Menu for CompletionMenu<M> {
@@ -511,17 +486,33 @@ impl<M: Menu> Menu for CompletionMenu<M> {
         self.apply_pending();
         self.close_if_empty();
         if self.inner.is_active() {
-            self.describe_selected(editor, completer, painter);
+            self.fetch_selected_help(editor);
+            self.lay_out_help(painter);
+        } else {
+            self.help_box = None;
         }
     }
     fn replace_in_buffer(&self, editor: &mut Editor) {
         self.inner.replace_in_buffer(editor)
     }
     fn menu_required_lines(&self, terminal_columns: u16) -> u16 {
-        if self.empty() { 0 } else { self.inner.menu_required_lines(terminal_columns) }
+        if self.empty() {
+            return 0;
+        }
+        self.inner.menu_required_lines(terminal_columns).max(self.help_rows() as u16)
     }
     fn menu_string(&self, available_lines: u16, use_ansi_coloring: bool) -> String {
-        if self.empty() { String::new() } else { self.inner.menu_string(available_lines, use_ansi_coloring) }
+        if self.empty() {
+            return String::new();
+        }
+        let list = self.inner.menu_string(available_lines, use_ansi_coloring);
+        match &self.help_box {
+            Some(b) => {
+                let rows = render_box(&b.lines, self.help_rows().min(available_lines as usize), use_ansi_coloring);
+                beside(&list, &rows, b.side)
+            },
+            None => list,
+        }
     }
     fn min_rows(&self) -> u16 {
         self.inner.min_rows()
@@ -672,28 +663,6 @@ mod tests {
         assert_eq!(code_context("df[x, ", 6).call, None);
         assert_eq!(code_context("f(x == 1", 8).call.unwrap().arg_name, None);
         assert_eq!(code_context("f(\"(\", ", 7).call.unwrap().arg_index, 1);
-    }
-
-    const MEAN_HELP: &str = "_mean {base}_\n\n## Arithmetic Mean\n\n------\n### Description\n\n\nGeneric function for the (trimmed) arithmetic\nmean.\n\n### Usage\n\n``` r\nmean(x, ...)\n\n## Default S3 method:\nmean(x, trim = 0, na.rm = FALSE, ...)\n```\n\n### Arguments\n\n| `x` | An R object. |\n";
-
-    #[test]
-    fn help_summary_has_usage_title_and_description() {
-        let help = help_summary("mean", MEAN_HELP);
-        assert!(help.has_usage);
-        assert_eq!(
-            help.text,
-            "mean(x, ...)  —  mean(x, trim = 0, na.rm = FALSE, ...)  —  Arithmetic Mean: Generic function for the (trimmed) arithmetic mean."
-        );
-    }
-
-    #[test]
-    fn help_summary_keeps_only_the_named_function_across_lines() {
-        let md = "## Complex Numbers\n### Description\nBasic functions which support [complex](../complex.html) arithmetic.\n### Usage\n``` r\ncomplex(length.out = 0, real = numeric(),\n        modulus = 1)\nArg(z)\n```\n";
-        assert_eq!(help_summary("complex", md).text, "complex(length.out = 0, real = numeric(), modulus = 1)  —  Complex Numbers: Basic functions which support complex arithmetic.");
-        assert_eq!(help_summary("Arg", md).text, "Arg(z)  —  Complex Numbers: Basic functions which support complex arithmetic.");
-        let package = help_summary("stats", "## The R Stats Package\n### Description\nR statistical functions.\n");
-        assert!(!package.has_usage);
-        assert_eq!(package.text, "The R Stats Package: R statistical functions.");
     }
 
     #[test]

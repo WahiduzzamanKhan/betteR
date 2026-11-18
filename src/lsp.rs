@@ -13,7 +13,7 @@ use reedline::{CompletionResult, Completer, Span, Suggestion};
 use serde_json::{json, Value};
 use unicode_width::UnicodeWidthStr;
 
-use crate::assist::{code_context, doc_key, SharedDocs};
+use crate::assist::{code_context, SharedDocs};
 use crate::ide::Ide;
 
 const DOC_URI: &str = "untitled:better-console";
@@ -242,7 +242,6 @@ fn ranked_suggestions<'a>(text: &str, pos: usize, items: &'a [Value], utf8: bool
             Suggestion {
                 value,
                 display_override: (label != filter || item["insertTextFormat"] == 2).then(|| label.to_string()),
-                description: describe(item),
                 span: Span::new(start, end),
                 ..Default::default()
             },
@@ -390,21 +389,12 @@ impl LspCompleter {
         Self { backend, docs, tab_pressed, menu_openings, explicit: None, cache: None }
     }
 
-    /// The suggestions for `items`, with the help fetched so far; notes which
-    /// item each came from, for the menu to fetch help for the rest.
+    /// The suggestions for `items`; notes which item each came from, for the
+    /// menu to show its help.
     fn suggestions(&self, line: &str, pos: usize, items: &[Value], utf8: bool) -> Vec<Suggestion> {
         let ranked = ranked_suggestions(line, pos, items, utf8);
-        let mut docs = self.docs.lock().unwrap();
-        docs.items = ranked.iter().map(|(_, item)| (*item).clone()).collect();
-        ranked
-            .into_iter()
-            .map(|(mut suggestion, item)| {
-                if let Some(text) = docs.text.get(&doc_key(item)).filter(|t| !t.is_empty()) {
-                    suggestion.description = Some(text.clone());
-                }
-                suggestion
-            })
-            .collect()
+        self.docs.lock().unwrap().items = ranked.iter().map(|(_, item)| (*item).clone()).collect();
+        ranked.into_iter().map(|(suggestion, _)| suggestion).collect()
     }
 
     /// Whether completion as you type has anything worth showing here: a name
@@ -465,9 +455,9 @@ impl Completer for LspCompleter {
     }
 }
 
-/// What kind of thing a completion is, for the description beside the menu
-/// until its help arrives (the package is in the list itself).
-fn describe(item: &Value) -> Option<String> {
+/// What kind of thing a completion is, shown beside the menu until its help
+/// arrives, or instead of help (the package is in the list itself).
+pub fn kind_label(item: &Value) -> Option<String> {
     let kind = match item["kind"].as_u64() {
         Some(2 | 3) => Some("function"),
         Some(5) => Some("column"),

@@ -2,6 +2,7 @@
 //! Jupyter, with tree-sitter highlighting and LSP-backed completion.
 
 mod assist;
+mod help_box;
 mod highlight;
 mod ide;
 mod jupyter;

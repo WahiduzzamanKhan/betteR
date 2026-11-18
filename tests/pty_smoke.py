@@ -150,6 +150,13 @@ t.idle(2)
 out = ANSI.sub("", t.raw)
 check("suggestions list their package in a second column", re.search(r"│mean +\{base\}│", out) is not None, out[-600:])
 check("suggestion shows its help page", "mean(x, trim = 0, na.rm = FALSE, ...)" in out and "Arithmetic Mean" in out, out[-600:])
+check(
+    "help keeps its line breaks and colours",
+    re.search(r"│ mean\(x, \.\.\.\) +│", out) is not None
+    and re.search(r"│ Arithmetic Mean +│", out) is not None
+    and "\x1b[36mmean(x, ...)" in t.raw,
+    out[-800:],
+)
 t.raw = ""
 t.p.send("\x1b[B")
 t.idle(1.5)
