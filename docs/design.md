@@ -16,7 +16,7 @@ How the console is built on ark, and what was learned about ark's protocols alon
 | `browser()` / `debug()` | The prompt switches to `Browse[N]>`. An empty line steps, as in R. |
 | Ctrl-C interrupts running code | `interrupt_request` on control. The rest of the input is not run (see the ark findings below). |
 | stdout / stderr / errors / warnings | stderr is shown in red; error tracebacks are shown when they have more than one frame |
-| History, fish-style hints, Alt-Enter newline, bracketed paste, reverse-i-search | reedline (history in `~/Library/Application Support/better/history.txt`, or `$BETTER_HISTORY`) |
+| History, fish-style hints, Shift-Enter (or Alt-Enter) newline, bracketed paste, reverse-i-search | reedline (history in `~/Library/Application Support/better/history.txt`, or `$BETTER_HISTORY`) |
 | `options(width)` follows the terminal width | Set at startup and updated on resize, through the UI comm |
 | Attach mode (`-f`) | Shares state with the other client in both directions. Detaching leaves the kernel running; a session the console spawned is shut down on exit. |
 | Plots | Drawn inline in terminals with an image protocol: iTerm2 and WezTerm (OSC 1337), and kitty. Override detection with `BETTER_INLINE_IMAGES=iterm|kitty|none`; VS Code's terminal works with `iterm` if `terminal.integrated.enableImages` is on. Otherwise a one-line hint is printed. When hosted by the extension, plots go to its *R Plots* pane instead. |

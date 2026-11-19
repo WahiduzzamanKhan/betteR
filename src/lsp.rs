@@ -433,7 +433,17 @@ impl Completer for LspCompleter {
         if !reusable {
             self.cache = None;
             let timeout = if explicit { EXPLICIT_TIMEOUT } else { AUTO_TIMEOUT };
-            let Ok((items, incomplete, utf8)) = self.backend.completions(line, pos, timeout) else {
+            // Reedline passes the line only up to the cursor, so a string being
+            // typed is unterminated, and ark offers no file paths for those.
+            let closed;
+            let text = match code_context(line, pos).open_quote {
+                Some(quote) => {
+                    closed = format!("{line}{quote}");
+                    &closed
+                },
+                None => line,
+            };
+            let Ok((items, incomplete, utf8)) = self.backend.completions(text, pos, timeout) else {
                 self.docs.lock().unwrap().items.clear();
                 return CompletionResult::fresh(Vec::new());
             };

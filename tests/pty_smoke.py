@@ -116,6 +116,15 @@ t.run("}")
 ok, out = t.run("f(1)")
 check("multiline function works", ok and "[1] 2" in out, out)
 
+# Shift-Enter, as the kitty keyboard protocol reports it: a newline even
+# though `11 + 1` is complete, so nothing runs until Enter.
+t.raw = ""
+t.p.send("11 + 1\x1b[13;2u")
+t.idle(1)
+ran_early = "[1] 12" in ANSI.sub("", t.raw)
+ok, out = t.run("22 + 1")
+check("Shift-Enter inserts a newline", not ran_early and ok and "[1] 12" in out and "[1] 23" in out, out)
+
 t.run("y <- mtcars")
 t.raw = ""
 t.p.send("y$cy\t")
@@ -175,6 +184,20 @@ t.idle(1)
 check("no popup inside a string", MENU not in t.raw, ANSI.sub("", t.raw))
 t.clear_line()
 
+# Reedline hands the completer the line only up to the cursor, so the
+# string is still open; file paths must be offered anyway.
+paths = tempfile.mkdtemp()
+open(os.path.join(paths, "unique_name.csv"), "w").close()
+t.raw = ""
+t.p.send(f'nchar("{paths}/uniq')
+t.idle(1)
+t.p.send("\t")
+t.idle(1.5)
+t.p.send("\t")
+t.idle(1)
+ok, out = t.run('")')
+check("Tab completes a file path in an unclosed string", ok and "unique_name.csv" in out, out)
+
 t.raw = ""
 t.p.send("y$")
 t.idle(1.5)
@@ -195,6 +218,16 @@ out = ANSI.sub("", t.raw)
 check("signature shown under the input", "print_me_please(a, b = 2)" in out, out)
 check("current argument highlighted", "\x1b[1mb = 2" in t.raw, t.raw[-300:])
 t.clear_line()
+
+# Ctrl-R: typed letters go to the search term, Enter takes the match.
+t.raw = ""
+t.p.send("\x12")
+t.p.send("x * ")
+t.idle(1)
+t.p.send("\r")
+t.idle(0.5)
+ok, out = t.run("")
+check("Ctrl-R finds a history entry and Enter runs it", ok and "[1] 84" in out, out)
 
 ok, out = t.run('name <- readline("Name? ")', until=(r"Name\? ",))
 check("readline() input_request prompt", ok, out)

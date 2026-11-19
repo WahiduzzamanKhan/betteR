@@ -322,7 +322,7 @@ impl Repl {
             let dim = Color::DarkGray.normal();
             println!("{}", Color::Blue.bold().paint(r_version.trim()));
             println!("{}", dim.paint(format!("ark {ark} · {how}")));
-            println!("{}", dim.paint("Tab completes · Alt-Enter newline · Ctrl-C interrupts · Ctrl-D quits"));
+            println!("{}", dim.paint("Tab completes · Shift-Enter newline · Ctrl-C interrupts · Ctrl-D quits"));
             repl.replay_startup_output();
             repl.editor = Some(repl.build_editor(backend)?);
             repl.spawn_idle_pump();
@@ -396,6 +396,9 @@ impl Repl {
             .with_hinter(Box::new(DefaultHinter::default().with_style(Style::new().fg(Color::DarkGray))))
             .with_edit_mode(Box::new(AutoCompleteMode::new(Emacs::new(keybindings), tab_pressed)))
             .use_bracketed_paste(true)
+            // Lets terminals that support it report Shift-Enter (bound by reedline
+            // to a newline, like Alt-Enter) apart from Enter.
+            .use_kitty_keyboard_enhancement(true)
             .with_break_signal(self.wake.clone());
         if let Some(path) = history_path() {
             editor = editor.with_history(Box::new(FileBackedHistory::with_file(10_000, path)?));

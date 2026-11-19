@@ -28,6 +28,8 @@ const SIGNATURE_TIMEOUT: Duration = Duration::from_millis(500);
 pub struct CodeContext {
     /// Inside a string or a comment, where completions would be noise.
     pub in_string_or_comment: bool,
+    /// The quote of the string the cursor is in, if any.
+    pub open_quote: Option<char>,
     /// The innermost function call whose parentheses enclose the cursor.
     pub call: Option<Call>,
 }
@@ -110,7 +112,8 @@ pub fn code_context(text: &str, pos: usize) -> CodeContext {
         },
         _ => None,
     };
-    CodeContext { in_string_or_comment, call }
+    let open_quote = quote.filter(|q| *q != '`');
+    CodeContext { in_string_or_comment, open_quote, call }
 }
 
 /// `text` with whatever it leaves open (a string, brackets) closed at the end.
@@ -160,11 +163,13 @@ pub fn close_brackets(text: &str) -> String {
 pub struct AutoCompleteMode<M: EditMode> {
     inner: M,
     tab_pressed: Arc<AtomicBool>,
+    /// In Ctrl-R history search, which ignores `Multiple` events.
+    searching: bool,
 }
 
 impl<M: EditMode> AutoCompleteMode<M> {
     pub fn new(inner: M, tab_pressed: Arc<AtomicBool>) -> Self {
-        Self { inner, tab_pressed }
+        Self { inner, tab_pressed, searching: false }
     }
 }
 
@@ -178,6 +183,27 @@ impl<M: EditMode> EditMode for AutoCompleteMode<M> {
             return ReedlineEvent::None;
         };
         let parsed = self.inner.parse_event(event);
+        if self.searching {
+            // Typed letters must reach the search term unwrapped, and Enter
+            // (bound as Esc + Enter, to close a menu first) must take the match.
+            let parsed = match parsed {
+                ReedlineEvent::Multiple(events) if events.contains(&ReedlineEvent::Enter) => ReedlineEvent::Enter,
+                other => other,
+            };
+            self.searching = !matches!(
+                parsed,
+                ReedlineEvent::Enter
+                    | ReedlineEvent::Submit
+                    | ReedlineEvent::SubmitOrNewline
+                    | ReedlineEvent::HistoryHintComplete
+                    | ReedlineEvent::Esc
+                    | ReedlineEvent::CtrlC
+                    | ReedlineEvent::CtrlD
+                    | ReedlineEvent::ExecuteHostCommand(_)
+            );
+            return parsed;
+        }
+        self.searching = parsed == ReedlineEvent::SearchHistory;
         match &parsed {
             ReedlineEvent::Edit(commands)
                 if matches!(commands.as_slice(), [EditCommand::InsertChar(c)] if is_ident(*c) || matches!(c, '$' | '@' | ':')) =>
@@ -659,6 +685,9 @@ mod tests {
         assert!(code_context("paste(\"a, (b", 12).in_string_or_comment);
         assert!(code_context("f(x) # mean(", 12).in_string_or_comment);
         assert!(!code_context("`odd name`", 5).in_string_or_comment);
+        assert_eq!(code_context("read.csv('data/", 15).open_quote, Some('\''));
+        assert_eq!(code_context("`odd name", 9).open_quote, None);
+        assert_eq!(code_context("x <- \"a\" # \"", 12).open_quote, None);
         assert_eq!(code_context("if (x", 5).call, None);
         assert_eq!(code_context("df[x, ", 6).call, None);
         assert_eq!(code_context("f(x == 1", 8).call.unwrap().arg_name, None);

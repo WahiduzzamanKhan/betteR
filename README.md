@@ -18,7 +18,7 @@ cyl   carb
 - **Syntax highlighting** while you type.
 - **Completion as you type, from your live session**: a pop-up appears once a name has three letters, or straight after `$`, `@` or `::`, with data frame columns, functions you've defined, packages and arguments, each with its package (`{base}`) in a second column. Beside the highlighted suggestion is its help, laid out with line breaks and colour: a function's usage, title, description and arguments from its help page, or its signature if it has none. Press Tab to take a suggestion, or for file paths in strings.
 - **Function signatures** under the line while you type a call, with the current argument in bold: `mean(x, trim = 0, `**`na.rm = FALSE`**`, ...)`.
-- **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Alt-Enter inserts a newline.
+- **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Shift-Enter inserts a newline. Terminals that send Shift-Enter the same as Enter, such as macOS Terminal, need Alt-Enter instead.
 - **History** with fish-style suggestions as you type, Ctrl-R reverse search and bracketed paste.
 - **`browser()` and `debug()`** with a `Browse[1]>` prompt. Enter steps, as in R.
 - **`readline()` and `menu()`** prompts.
@@ -85,7 +85,7 @@ It starts a new R session in the current directory. Quit with **Ctrl-D** or `q()
 | **↑** / **↓** (suggestions showing) | Move through the suggestions |
 | **Esc** | Close the suggestions |
 | **Enter** | Run the input as typed (even with suggestions showing), or start a new line if it isn't complete yet |
-| **Alt-Enter** | Insert a newline without running |
+| **Shift-Enter** | Insert a newline without running. Use **Alt-Enter** in terminals where Shift-Enter runs the line (they send it the same as Enter) |
 | **→** (at end of line) | Accept the grey suggestion from history |
 | **↑** / **↓** | Previous / next history entry |
 | **Ctrl-R** | Search history |
