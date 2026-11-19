@@ -41,3 +41,9 @@ open = "5"
 [build-dependencies]
 # Windows application manifest (UTF-8 code page); see build.rs. Same version as ark's.
 embed-resource = "3.0.12"
+
+# crossterm 0.29.0 with one Windows fix (emoji and other non-BMP characters
+# were dropped from keyboard input); see vendor/README.md. Remove once a
+# crossterm release includes crossterm-rs/crossterm#1073.
+[patch.crates-io]
+crossterm = { path = "vendor/crossterm" }
