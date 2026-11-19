@@ -37,12 +37,15 @@ jobs:
         run: cargo test --locked
 
       - uses: astral-sh/setup-uv@v6
-        if: runner.os != 'Windows'
 
-      # pexpect needs a Unix PTY; the Windows console is tested in a later step.
       - name: End-to-end tests (PTY)
         if: runner.os != 'Windows'
         run: uv run --with pexpect python tests/pty_smoke.py
+
+      # The same tests in a ConPTY, the pseudo-console Windows Terminal uses.
+      - name: End-to-end tests (ConPTY)
+        if: runner.os == 'Windows'
+        run: uv run --with pywinpty python tests/pty_smoke.py target/debug/better.exe
 
       # Without a PTY: piped input runs through a whole session (kernel start,
       # execute, shutdown). Checks that R runs in UTF-8, which needs the

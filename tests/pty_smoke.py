@@ -1,22 +1,32 @@
 """Phase 1 interactive smoke test: drives the real `better` binary in a PTY.
 
 Usage: uv run --with pexpect python tests/pty_smoke.py [path/to/better]
+On Windows (a ConPTY, as Windows Terminal uses):
+       uv run --with pywinpty python tests/pty_smoke.py [path\\to\\better.exe]
 """
 
 import json
 import os
+import queue
 import re
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
-import pexpect
+WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    from winpty import PtyProcess
+else:
+    import pexpect
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "target/debug/better")
+BIN = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / ("target/debug/better.exe" if WINDOWS else "target/debug/better"))
+# Failure details include what the console printed; the Windows CI console is cp1252.
+sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]|\r")
 
 # Reedline enables bracketed paste each time it starts reading a line.
@@ -28,62 +38,157 @@ results = {}
 
 # Records what the console asks the browser to open, instead of opening it.
 OPENED = os.path.join(tempfile.mkdtemp(), "opened.txt")
-FAKE_BROWSER = os.path.join(os.path.dirname(OPENED), "browser")
-with open(FAKE_BROWSER, "w") as f:
-    f.write(f'#!/bin/sh\necho "$1" >> {OPENED}\n')
-os.chmod(FAKE_BROWSER, 0o755)
+if WINDOWS:
+    FAKE_BROWSER = os.path.join(os.path.dirname(OPENED), "browser.cmd")
+    with open(FAKE_BROWSER, "w") as f:
+        f.write(f'@echo off\r\n>>"{OPENED}" echo %~1\r\n')
+else:
+    FAKE_BROWSER = os.path.join(os.path.dirname(OPENED), "browser")
+    with open(FAKE_BROWSER, "w") as f:
+        f.write(f'#!/bin/sh\necho "$1" >> {OPENED}\n')
+    os.chmod(FAKE_BROWSER, 0o755)
+
+
+class Pty:
+    """The console in a pseudo-terminal: a Unix PTY, or a Windows ConPTY."""
+
+    def __init__(self, args, cwd, env):
+        if WINDOWS:
+            self.p = PtyProcess.spawn([BIN, *args], cwd=cwd, env=env, dimensions=(40, 120))
+            # ConPTY reads block, so a thread feeds a queue that can be polled.
+            self.chunks = queue.Queue()
+            threading.Thread(target=self._pump, daemon=True).start()
+        else:
+            self.p = pexpect.spawn(BIN, list(args), dimensions=(40, 120), encoding="utf-8", env=env, cwd=cwd)
+        self.pid = self.p.pid
+        self.eof = False
+
+    def _pump(self):
+        while True:
+            try:
+                self.chunks.put(self.p.read(65536))
+            except EOFError:
+                self.chunks.put(None)
+                return
+
+    def send(self, text):
+        if WINDOWS:
+            self.p.write(text)
+        else:
+            self.p.send(text)
+
+    def read(self, timeout):
+        """What arrived within `timeout` seconds; "" if nothing did, None at EOF."""
+        if self.eof:
+            return None
+        if WINDOWS:
+            try:
+                chunk = self.chunks.get(timeout=timeout)
+            except queue.Empty:
+                return ""
+        else:
+            try:
+                chunk = self.p.read_nonblocking(65536, timeout=timeout)
+            except pexpect.TIMEOUT:
+                return ""
+            except pexpect.EOF:
+                chunk = None
+        if chunk is None:
+            self.eof = True
+        return chunk
+
+    def wait(self, timeout=15):
+        """Waits for the console to exit; its exit status, or None if it didn't."""
+        deadline = time.time() + timeout
+        while time.time() < deadline and self.read(0.1) is not None:
+            pass
+        if WINDOWS:
+            while self.p.isalive() and time.time() < deadline:
+                time.sleep(0.1)
+            return None if self.p.isalive() else self.p.exitstatus
+        if self.p.isalive():
+            return None
+        self.p.close()
+        return self.p.exitstatus
+
+
+def command_line(pid):
+    """The process's full command line, as other users of the machine can see it."""
+    if WINDOWS:
+        query = f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"
+        return subprocess.run(["powershell", "-NoProfile", "-Command", query], capture_output=True, text=True).stdout
+    return subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
 
 
 class Term:
-    """pexpect wrapper that answers cursor-position queries (reedline sends them)."""
+    """Drives the console, answering cursor-position queries as a terminal does
+    (reedline sends them on Unix)."""
 
     def __init__(self, args=(), cwd=None, env=None):
         env = dict(os.environ, BETTER_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"),
                    BETTER_INLINE_IMAGES="iterm", BROWSER=FAKE_BROWSER, **(env or {}))
-        self.p = pexpect.spawn(BIN, list(args), dimensions=(40, 120), encoding="utf-8", timeout=30, env=env, cwd=cwd)
+        self.p = Pty(args, cwd, env)
         self.raw = ""
+        self.buf = ""  # read, but not yet matched by `expect`
+
+    def _take(self, chunk):
+        for _ in range(chunk.count("\x1b[6n")):
+            self.p.send("\x1b[1;1R")
 
     def expect(self, *patterns, timeout=30):
-        """Matches `patterns` in order (a DSR query may sit between them)."""
+        """Matches `patterns` in order."""
         deadline = time.time() + timeout
         return all(self._expect_one(p, deadline) for p in patterns)
 
     def _expect_one(self, pattern, deadline):
-        while time.time() < deadline:
-            i = self.p.expect([pattern, r"\x1b\[6n", pexpect.TIMEOUT, pexpect.EOF], timeout=deadline - time.time())
-            self.raw += self.p.before + (self.p.after if isinstance(self.p.after, str) else "")
-            if i == 0:
+        while True:
+            m = re.search(pattern, self.buf)
+            if m:
+                self.raw += self.buf[: m.end()]
+                self.buf = self.buf[m.end() :]
                 return True
-            if i == 1:
-                self.p.send("\x1b[1;1R")
-                continue
-            return False
-        return False
+            left = deadline - time.time()
+            if left <= 0:
+                return False
+            chunk = self.p.read(min(left, 0.1))
+            if chunk is None:
+                return False
+            self._take(chunk)
+            self.buf += chunk
 
     def idle(self, seconds):
-        """Waits like a user would, answering cursor-position queries as a real terminal does."""
+        """Waits like a user would, collecting what the console prints."""
+        self.raw += self.buf
+        self.buf = ""
         end = time.time() + seconds
         while time.time() < end:
-            try:
-                chunk = self.p.read_nonblocking(65536, timeout=0.05)
-            except pexpect.TIMEOUT:
-                continue
-            except pexpect.EOF:
+            chunk = self.p.read(0.05)
+            if chunk is None:
                 return
+            self._take(chunk)
             self.raw += chunk
-            for _ in range(chunk.count("\x1b[6n")):
-                self.p.send("\x1b[1;1R")
+
+    def send(self, text):
+        self.p.send(text)
+
+    def quit(self):
+        """Ctrl-D; the console's exit status, or None if it didn't exit (then it's killed)."""
+        self.send("\x04")
+        status = self.p.wait()
+        if status is None:
+            self.p.p.terminate(force=True)
+        return status
 
     def clear_line(self):
         """Closes any completion menu and empties the input line."""
-        self.p.send("\x1b")
-        self.p.send("\x15")
+        self.send("\x1b")
+        self.send("\x15")
         self.idle(0.5)
 
     def run(self, line, until=None, timeout=30):
         """Sends a line; by default waits until reedline is reading the next top-level line."""
         self.raw = ""
-        self.p.send(line + "\r")
+        self.send(line + "\r")
         ok = self.expect(*(until or (READY, TOP)), timeout=timeout)
         return ok, ANSI.sub("", self.raw)
 
@@ -101,40 +206,31 @@ ok, out = t.run("x * 2")
 check("execute", ok and "[1] 84" in out, out)
 
 t.raw = ""
-t.p.send("if (TRUE) print('hi') # c")
+t.send("if (TRUE) print('hi') # c")
 t.expect(r"# c", timeout=5)
 check("syntax highlighting emits colors", "\x1b[" in t.raw and "if" in ANSI.sub("", t.raw), t.raw[-200:])
-t.p.send("\x03")  # Ctrl-C at the prompt clears the line
+t.send("\x03")  # Ctrl-C at the prompt clears the line
 t.expect(READY, timeout=5)
 
 t.raw = ""
-t.p.send("f <- function(a) {\r")
+t.send("f <- function(a) {\r")
 check("multiline continuation prompt", t.expect(r"\+ ", timeout=10), ANSI.sub("", t.raw))
-t.p.send("a + 1\r")
+t.send("a + 1\r")
 t.expect(r"\+ ", timeout=10)
 t.run("}")
 ok, out = t.run("f(1)")
 check("multiline function works", ok and "[1] 2" in out, out)
 
-# Shift-Enter, as the kitty keyboard protocol reports it: a newline even
-# though `11 + 1` is complete, so nothing runs until Enter.
-t.raw = ""
-t.p.send("11 + 1\x1b[13;2u")
-t.idle(1)
-ran_early = "[1] 12" in ANSI.sub("", t.raw)
-ok, out = t.run("22 + 1")
-check("Shift-Enter inserts a newline", not ran_early and ok and "[1] 12" in out and "[1] 23" in out, out)
-
 t.run("y <- mtcars")
 t.raw = ""
-t.p.send("y$cy\t")
+t.send("y$cy\t")
 t.idle(1.5)
 ok, out = t.run("")
 check("tab completes live data frame column (y$cy -> y$cyl)", "y$cyl" in out and "[1] 6 6 4" in out, out)
 
 t.run("print_me_please <- function(a, b = 2) a + b")
 t.raw = ""
-t.p.send("print_me\t")
+t.send("print_me\t")
 t.idle(1.5)
 ok, out = t.run("1)")
 check("tab completes session-defined function", ok and "[1] 3" in out, out)
@@ -144,7 +240,7 @@ check("tab completes session-defined function", ok and "[1] 3" in out, out)
 # always runs the line as typed.
 MENU = "╭"
 t.raw = ""
-t.p.send("print_m")
+t.send("print_m")
 t.idle(1.5)
 out = ANSI.sub("", t.raw)
 check("completion pops up as you type", MENU in t.raw and "print_me_please" in out, out)
@@ -154,7 +250,7 @@ t.clear_line()
 
 # Beside a suggestion: its help, fetched as it's selected.
 t.raw = ""
-t.p.send("base::mea")
+t.send("base::mea")
 t.idle(2)
 out = ANSI.sub("", t.raw)
 check("suggestions list their package in a second column", re.search(r"│mean +\{base\}│", out) is not None, out[-600:])
@@ -167,52 +263,54 @@ check(
     out[-800:],
 )
 t.raw = ""
-t.p.send("\x1b[B")
+t.send("\x1b[B")
 t.idle(1.5)
 check("next suggestion shows its own help", "Date Class" in ANSI.sub("", t.raw), ANSI.sub("", t.raw)[-600:])
 t.clear_line()
 
 t.raw = ""
-t.p.send("pr")
+t.send("pr")
 t.idle(1)
 check("no popup for a one- or two-letter name", MENU not in t.raw, ANSI.sub("", t.raw))
 t.clear_line()
 
 t.raw = ""
-t.p.send('paste("print_m')
+# `c` is too short for a popup of its own; ConPTY delivers keys one at a time,
+# so a longer name would legitimately show one before the string starts.
+t.send('c("print_m')
 t.idle(1)
 check("no popup inside a string", MENU not in t.raw, ANSI.sub("", t.raw))
 t.clear_line()
 
 # Reedline hands the completer the line only up to the cursor, so the
 # string is still open; file paths must be offered anyway.
-paths = tempfile.mkdtemp()
+paths = tempfile.mkdtemp().replace("\\", "/")
 open(os.path.join(paths, "unique_name.csv"), "w").close()
 t.raw = ""
-t.p.send(f'nchar("{paths}/uniq')
+t.send(f'nchar("{paths}/uniq')
 t.idle(1)
-t.p.send("\t")
+t.send("\t")
 t.idle(1.5)
-t.p.send("\t")
+t.send("\t")
 t.idle(1)
 ok, out = t.run('")')
 check("Tab completes a file path in an unclosed string", ok and "unique_name.csv" in out, out)
 
 t.raw = ""
-t.p.send("y$")
+t.send("y$")
 t.idle(1.5)
 check("popup right after $", MENU in t.raw and "mpg" in ANSI.sub("", t.raw), ANSI.sub("", t.raw))
 t.clear_line()
 
 t.raw = ""
-t.p.send("print_m")
+t.send("print_m")
 t.idle(1.5)
 ok, out = t.run("")
 check("Enter runs the line, not the suggestion", ok and "print_m" in out and "not found" in out, out)
 
 # The signature of the call around the cursor, below the input.
 t.raw = ""
-t.p.send("print_me_please(1, ")
+t.send("print_me_please(1, ")
 t.idle(1.5)
 out = ANSI.sub("", t.raw)
 check("signature shown under the input", "print_me_please(a, b = 2)" in out, out)
@@ -221,10 +319,10 @@ t.clear_line()
 
 # Ctrl-R: typed letters go to the search term, Enter takes the match.
 t.raw = ""
-t.p.send("\x12")
-t.p.send("x * ")
+t.send("\x12")
+t.send("x * ")
 t.idle(1)
-t.p.send("\r")
+t.send("\r")
 t.idle(0.5)
 ok, out = t.run("")
 check("Ctrl-R finds a history entry and Enter runs it", ok and "[1] 84" in out, out)
@@ -251,11 +349,11 @@ ok, out = t.run("plot(1:3)")
 check("plot drawn inline (iTerm2 image protocol)", ok and "\x1b]1337;File=inline=1" in t.raw, out[-200:])
 
 t.raw = ""
-t.p.send("Sys.sleep(30); print('not interrupted')\r")
+t.send("Sys.sleep(30); print('not interrupted')\r")
 t.idle(1.5)
 t.raw = ""
 start = time.time()
-t.p.send("\x03")
+t.send("\x03")
 ok = t.expect(READY, timeout=10)
 check("Ctrl-C interrupts running R code", ok and time.time() - start < 5 and '[1] "not interrupted"' not in t.raw,
       ANSI.sub("", t.raw))
@@ -263,10 +361,24 @@ check("Ctrl-C interrupts running R code", ok and time.time() - start < 5 and '[1
 ok, out = t.run("x")
 check("session survives interrupt", ok and "[1] 42" in out, out)
 
-t.p.sendcontrol("d")
-t.p.expect(pexpect.EOF, timeout=15)
-t.p.close()
-check("Ctrl-D exits cleanly", t.p.exitstatus == 0, t.p.exitstatus)
+status = t.quit()
+check("Ctrl-D exits cleanly", status == 0, status)
+
+# Shift-Enter: a newline even though `11 + 1` is complete, so nothing runs
+# until Enter. As the kitty keyboard protocol reports it, or on Windows as
+# ConPTY's win32-input-mode key event (Enter key down, with Shift held). In a
+# session of its own: once ConPTY has seen one win32-input-mode key, it reads
+# later control characters (Ctrl-U) as plain letters.
+SHIFT_ENTER = "\x1b[13;28;13;1;16;1_" if WINDOWS else "\x1b[13;2u"
+t = Term()
+t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+t.raw = ""
+t.send("11 + 1" + SHIFT_ENTER)
+t.idle(1)
+ran_early = "[1] 12" in ANSI.sub("", t.raw)
+ok, out = t.run("22 + 1")
+check("Shift-Enter inserts a newline", not ran_early and ok and "[1] 12" in out and "[1] 23" in out, out)
+t.quit()
 
 # `.Rprofile` output (e.g. renv's "Project loaded"). A console that starts its
 # own kernel sees it live; one attaching to a running kernel (as the VS Code
@@ -280,8 +392,7 @@ ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
 out = ANSI.sub("", t.raw)
 check(".Rprofile output shown once (own kernel)",
       ok and out.count("profile stdout") == 1 and out.count("profile message") == 1, out)
-t.p.sendcontrol("d")
-t.p.expect(pexpect.EOF, timeout=15)
+t.quit()
 
 
 def free_port():
@@ -301,8 +412,7 @@ time.sleep(8)  # well past startup, like the extension's console
 t = Term(["--connection-file", conn])
 ok = t.expect("Ctrl-D quits", "profile stdout", "profile message", READY, TOP, timeout=60)
 check(".Rprofile output replayed when attaching later", ok, ANSI.sub("", t.raw))
-t.p.sendcontrol("d")
-t.p.expect(pexpect.EOF, timeout=15)
+t.quit()
 
 # Hosted by an IDE, as the VS Code extension does: the IDE listens on loopback
 # TCP, and the console proves itself with the token from its environment.
@@ -319,7 +429,7 @@ with socket.socket() as server:
     except (OSError, ValueError) as e:
         ide, hello = None, repr(e)
     check("hosted console sends hello with its token first", hello == {"type": "hello", "token": token}, hello)
-    argv = subprocess.run(["ps", "-o", "command=", "-p", str(t.p.pid)], capture_output=True, text=True).stdout
+    argv = command_line(t.p.pid)
     check("IDE token is not on the console's command line", argv.strip() != "" and token not in argv, argv)
     ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
     if ide:
@@ -327,8 +437,7 @@ with socket.socket() as server:
         ide.sendall((json.dumps({"type": "execute", "code": 'cat("from the IDE\\n")'}) + "\n").encode())
         ok = ok and t.expect(r"from the IDE\r?\n", READY, TOP)
     check("hosted console runs code the IDE sends", ok, ANSI.sub("", t.raw)[-300:])
-    t.p.sendcontrol("d")
-    t.p.expect(pexpect.EOF, timeout=15)
+    t.quit()
     if ide:
         ide.close()
 kernel.kill()
