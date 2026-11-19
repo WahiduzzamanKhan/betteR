@@ -126,7 +126,7 @@ better [OPTIONS]
   -V, --version                 Show the version
 ```
 
-`--kernel`, `--lsp-stdio` and `--ide <PORT>` are used internally by the VS Code extension. `--ide` connects to it on `127.0.0.1:<PORT>` and needs the extension's token in the `BETTER_IDE_TOKEN` environment variable.
+`--kernel`, `--lsp-stdio`, `--ide <PORT>` and `--shutdown` are used internally by the VS Code extension. `--shutdown -f <connection file>` ends that kernel's session the way `q()` would: R runs `.Last` and removes its temporary directory. `--ide` connects to it on `127.0.0.1:<PORT>` and needs the extension's token in the `BETTER_IDE_TOKEN` environment variable.
 
 **Running scripts:** if input is piped in, `better` runs it and exits. It stops at the first error and exits with code 1:
 

@@ -18,10 +18,12 @@ use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use serde_json::json;
 
-use crate::jupyter::{ConnectionInfo, KernelClient};
+use crate::jupyter::{Channel, ConnectionInfo, KernelClient};
 use crate::repl::{Origin, Repl};
 
 const USAGE: &str = "\
@@ -39,6 +41,7 @@ OPTIONS:
         --ide <PORT>              Connect to a host IDE on 127.0.0.1:<PORT> (Run Selection, debugger,
                                   completion); its token must be in BETTER_IDE_TOKEN
         --kernel                  Run as the R kernel (used internally; needs --connection-file)
+        --shutdown                End the session of the kernel at --connection-file, as q() would
     -h, --help                    Show this help
     -V, --version                 Show version
 
@@ -50,6 +53,7 @@ struct Args {
     log: Option<PathBuf>,
     lsp: bool,
     lsp_stdio: bool,
+    shutdown: bool,
     ide_port: Option<u16>,
 }
 
@@ -60,6 +64,7 @@ fn parse_args() -> Result<Option<Args>> {
         log: None,
         lsp: true,
         lsp_stdio: false,
+        shutdown: false,
         ide_port: None,
     };
     let mut it = std::env::args().skip(1);
@@ -71,6 +76,7 @@ fn parse_args() -> Result<Option<Args>> {
             "--log" => args.log = Some(value(&arg)?.into()),
             "--no-lsp" => args.lsp = false,
             "--lsp-stdio" => args.lsp_stdio = true,
+            "--shutdown" => args.shutdown = true,
             "--ide" => {
                 let port = value(&arg)?;
                 args.ide_port = Some(port.parse().with_context(|| format!("--ide needs a port number, not `{port}`"))?);
@@ -87,6 +93,28 @@ fn parse_args() -> Result<Option<Args>> {
         }
     }
     Ok(Some(args))
+}
+
+/// Asks the kernel to end its session. Ark interrupts any running code, then
+/// lets R quit as at the end of its input: R runs `.Last` and exit finalizers
+/// and removes its temp directory, unlike when its process is killed (on
+/// Windows, Node's `kill()` always kills outright). Returns once ark has
+/// accepted; the kernel process exits shortly after.
+fn request_shutdown(client: &KernelClient, timeout: Duration) -> Result<()> {
+    let id = client.send(Channel::Control, "shutdown_request", json!({ "restart": false }))?;
+    let deadline = Instant::now() + timeout;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        let Some((_, msg)) = client.poll(&[Channel::Control], left)? else {
+            continue;
+        };
+        if msg.msg_type() == "shutdown_reply" && msg.parent_id() == Some(id.as_str()) {
+            if msg.content["status"] != "ok" {
+                bail!("the kernel refused to shut down: {}", msg.content);
+            }
+            return Ok(());
+        }
+    }
+    bail!("the kernel didn't answer the shutdown request within {timeout:?}")
 }
 
 fn main() {
@@ -114,6 +142,13 @@ fn run() -> Result<i32> {
     if args.lsp_stdio {
         let path = args.connection_file.as_ref().context("--lsp-stdio needs --connection-file")?;
         proxy::run(&ConnectionInfo::read(path)?)?;
+        return Ok(0);
+    }
+
+    if args.shutdown {
+        let path = args.connection_file.as_ref().context("--shutdown needs --connection-file")?;
+        let client = KernelClient::connect(&ConnectionInfo::read(path)?)?;
+        request_shutdown(&client, Duration::from_secs(5))?;
         return Ok(0);
     }
 
