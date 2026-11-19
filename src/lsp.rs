@@ -38,7 +38,7 @@ impl LspClient {
             version: 0,
             utf8_positions: false,
         };
-        let root_uri = format!("file://{}", root.display());
+        let root_uri = directory_uri(root)?;
         let init = client.request(
             "initialize",
             json!({
@@ -477,9 +477,25 @@ pub fn kind_label(item: &Value) -> Option<String> {
     detail.or(kind).map(str::to_string)
 }
 
+/// Percent-encoded, and `file:///C:/...` on Windows: a hand-built
+/// `file://C:\...` fails ark's URI parsing, and with it the whole LSP.
+fn directory_uri(dir: &std::path::Path) -> Result<String> {
+    url::Url::from_directory_path(dir)
+        .map(String::from)
+        .map_err(|()| anyhow!("can't turn {} into a URI", dir.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_uris_are_valid() {
+        #[cfg(unix)]
+        assert_eq!(directory_uri("/tmp/a b%".as_ref()).unwrap(), "file:///tmp/a%20b%25/");
+        #[cfg(windows)]
+        assert_eq!(directory_uri(r"C:\Users\a b".as_ref()).unwrap(), "file:///C:/Users/a%20b/");
+    }
 
     #[test]
     fn positions_roundtrip_with_utf16() {

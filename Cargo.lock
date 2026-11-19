@@ -523,6 +523,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-r",
  "unicode-width",
+ "url",
  "uuid",
  "zmq",
 ]
