@@ -125,8 +125,8 @@ class Term:
     (reedline sends them on Unix)."""
 
     def __init__(self, args=(), cwd=None, env=None):
-        env = dict(os.environ, BETTER_HISTORY=os.path.join(tempfile.mkdtemp(), "history.txt"),
-                   BETTER_INLINE_IMAGES="iterm", BROWSER=FAKE_BROWSER, **(env or {}))
+        env = {**os.environ, "BETTER_HISTORY": os.path.join(tempfile.mkdtemp(), "history.txt"),
+               "BETTER_INLINE_IMAGES": "iterm", "BROWSER": FAKE_BROWSER, **(env or {})}
         self.p = Pty(args, cwd, env)
         self.raw = ""
         self.buf = ""  # read, but not yet matched by `expect`
@@ -370,7 +370,10 @@ check("Ctrl-D exits cleanly", status == 0, status)
 # session of its own: once ConPTY has seen one win32-input-mode key, it reads
 # later control characters (Ctrl-U) as plain letters.
 SHIFT_ENTER = "\x1b[13;28;13;1;16;1_" if WINDOWS else "\x1b[13;2u"
-t = Term()
+# Also a session in Windows Terminal (`WT_SESSION`), with nothing else that
+# would pick an image protocol, so plots must come out as Sixel.
+t = Term(env={"WT_SESSION": "pty-smoke", "BETTER_INLINE_IMAGES": "", "TERM_PROGRAM": "", "LC_TERMINAL": "",
+              "KITTY_WINDOW_ID": ""})
 t.expect("Ctrl-D quits", READY, TOP, timeout=60)
 t.raw = ""
 t.send("11 + 1" + SHIFT_ENTER)
@@ -378,6 +381,11 @@ t.idle(1)
 ran_early = "[1] 12" in ANSI.sub("", t.raw)
 ok, out = t.run("22 + 1")
 check("Shift-Enter inserts a newline", not ran_early and ok and "[1] 12" in out and "[1] 23" in out, out)
+
+t.raw = ""
+ok, out = t.run("plot(1:3)")
+sixel = re.search(r"\x1bP[0-9;]*q\"1;1;(\d+);(\d+)", t.raw)
+check("plot drawn as Sixel in Windows Terminal", ok and sixel and "\x1b\\" in t.raw[sixel.end():], out[-200:])
 t.quit()
 
 # `.Rprofile` output (e.g. renv's "Project loaded"). A console that starts its

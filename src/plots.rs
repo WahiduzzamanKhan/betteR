@@ -9,6 +9,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use anyhow::{anyhow, Result};
+use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::ide::Ide;
@@ -394,14 +396,18 @@ pub enum ImageProtocol {
     /// iTerm2's OSC 1337 (also WezTerm, VS Code with `terminal.integrated.enableImages`).
     Iterm,
     Kitty,
+    /// DEC Sixel (Windows Terminal 1.22+, also xterm, foot, VS Code with
+    /// `terminal.integrated.enableImages`). Takes pixels, not a PNG.
+    Sixel,
 }
 
-/// `BETTER_INLINE_IMAGES=iterm|kitty|none` overrides detection.
+/// `BETTER_INLINE_IMAGES=iterm|kitty|sixel|none` overrides detection.
 pub fn detect_image_protocol() -> Option<ImageProtocol> {
     let var = |k: &str| std::env::var(k).unwrap_or_default();
     match var("BETTER_INLINE_IMAGES").as_str() {
         "iterm" => return Some(ImageProtocol::Iterm),
         "kitty" => return Some(ImageProtocol::Kitty),
+        "sixel" => return Some(ImageProtocol::Sixel),
         "none" => return None,
         _ => {},
     }
@@ -411,14 +417,18 @@ pub fn detect_image_protocol() -> Option<ImageProtocol> {
     match var("TERM_PROGRAM").as_str() {
         "iTerm.app" | "WezTerm" => Some(ImageProtocol::Iterm),
         _ if var("LC_TERMINAL") == "iTerm2" => Some(ImageProtocol::Iterm),
+        // Windows Terminal. VS Code started from it inherits `WT_SESSION`, but
+        // sets `TERM_PROGRAM`, so it's ruled out by the arm above.
+        "" if !var("WT_SESSION").is_empty() => Some(ImageProtocol::Sixel),
         _ => None,
     }
 }
 
 /// Escape sequence that draws a base64 PNG at the cursor.
-pub fn inline_image(protocol: ImageProtocol, png_base64: &str) -> String {
-    match protocol {
+pub fn inline_image(protocol: ImageProtocol, png_base64: &str) -> Result<String> {
+    Ok(match protocol {
         ImageProtocol::Iterm => format!("\x1b]1337;File=inline=1;preserveAspectRatio=1:{png_base64}\x07"),
+        ImageProtocol::Sixel => sixel(png_base64)?,
         ImageProtocol::Kitty => {
             // Kitty takes the payload in chunks of at most 4096 bytes.
             let chunks: Vec<&[u8]> = png_base64.as_bytes().chunks(4096).collect();
@@ -434,7 +444,29 @@ pub fn inline_image(protocol: ImageProtocol, png_base64: &str) -> String {
             }
             out
         },
-    }
+    })
+}
+
+fn sixel(png_base64: &str) -> Result<String> {
+    let png = base64::engine::general_purpose::STANDARD.decode(png_base64)?;
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
+    // Expand palette and low bit depths, so every image is 8-bit gray or RGB(A).
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info()?;
+    let mut buf = vec![0; reader.output_buffer_size().ok_or_else(|| anyhow!("PNG too large"))?];
+    let info = reader.next_frame(&mut buf)?;
+    let pixels = &buf[..info.buffer_size()];
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => pixels.to_vec(),
+        png::ColorType::Rgb => pixels.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => pixels.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Grayscale => pixels.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return Err(anyhow!("unexpanded indexed PNG")),
+    };
+    // No dithering: plots are mostly flat colours and antialiased edges, which
+    // fit in 256 colours, and dithering would speckle text and lines.
+    let opts = icy_sixel::EncodeOptions { diffusion: 0.0, ..Default::default() };
+    Ok(icy_sixel::sixel_encode(&rgba, info.width as usize, info.height as usize, &opts)?)
 }
 
 #[cfg(test)]
@@ -451,7 +483,7 @@ mod tests {
     #[test]
     fn kitty_payload_is_chunked() {
         let data = "A".repeat(5000);
-        let seq = inline_image(ImageProtocol::Kitty, &data);
+        let seq = inline_image(ImageProtocol::Kitty, &data).unwrap();
         assert!(seq.starts_with("\x1b_Ga=T,f=100,m=1;"));
         assert!(seq.contains("\x1b_Gm=0;"));
         assert_eq!(seq.matches('A').count(), 5000);
@@ -460,8 +492,36 @@ mod tests {
     #[test]
     fn iterm_sequence_wraps_payload() {
         assert_eq!(
-            inline_image(ImageProtocol::Iterm, "QUJD"),
+            inline_image(ImageProtocol::Iterm, "QUJD").unwrap(),
             "\x1b]1337;File=inline=1;preserveAspectRatio=1:QUJD\x07"
         );
+    }
+
+    #[test]
+    fn sixel_round_trips_a_png() {
+        // 3x2 RGB: red, green, blue / white, black, gray.
+        let pixels = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 128, 128, 128];
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, 3, 2);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(&png);
+
+        let seq = inline_image(ImageProtocol::Sixel, &data).unwrap();
+        assert!(seq.starts_with("\x1bP"), "not a DCS sequence: {seq:?}");
+        assert!(seq.ends_with("\x1b\\"));
+        // Raster attributes give the size; the decoder pads to a 6-pixel band.
+        assert!(seq.contains("\"1;1;3;2"), "no raster attributes: {seq:?}");
+        let image = icy_sixel::SixelImage::decode(seq.as_bytes()).unwrap();
+        let pixel = |i: usize| &image.pixels[i * 4..i * 4 + 4];
+        assert_eq!(pixel(0), &[255, 0, 0, 255]);
+        assert_eq!(pixel(4), &[0, 0, 0, 255]);
+        // Sixel colours are percentages, so 128 comes back as 127 or 128.
+        assert!(pixel(5)[..3].iter().all(|c| c.abs_diff(128) <= 1), "{:?}", pixel(5));
+    }
+
+    #[test]
+    fn sixel_rejects_garbage() {
+        assert!(inline_image(ImageProtocol::Sixel, "QUJD").is_err());
     }
 }

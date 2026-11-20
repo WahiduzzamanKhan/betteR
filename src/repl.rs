@@ -591,13 +591,19 @@ impl Repl {
         self.clear_prompt();
         self.finish_line();
         match self.image_protocol {
-            Some(protocol) => {
-                println!("{}", inline_image(protocol, png_base64));
-                let _ = std::io::stdout().flush();
+            Some(protocol) => match inline_image(protocol, png_base64) {
+                Ok(seq) => {
+                    println!("{seq}");
+                    let _ = std::io::stdout().flush();
+                },
+                Err(err) => {
+                    self.write(&format!("[plot: can't draw it: {err}]"), Some(Color::DarkGray.normal()));
+                    self.finish_line();
+                },
             },
             None => {
-                let hint = "[plot: this terminal can't show images; use iTerm2, WezTerm or kitty, \
-                            set BETTER_INLINE_IMAGES, or the VS Code extension's plot pane]";
+                let hint = "[plot: this terminal can't show images; use iTerm2, WezTerm, kitty or \
+                            Windows Terminal, set BETTER_INLINE_IMAGES, or the VS Code extension's plot pane]";
                 self.write(hint, Some(Color::DarkGray.normal()));
                 self.finish_line();
             },

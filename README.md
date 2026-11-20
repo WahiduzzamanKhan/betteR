@@ -23,7 +23,7 @@ cyl   carb
 - **`browser()` and `debug()`** with a `Browse[1]>` prompt. Enter steps, as in R.
 - **`readline()` and `menu()`** prompts.
 - **Ctrl-C** stops running code without losing your session.
-- **Plots drawn inline** in terminals that support images (iTerm2, WezTerm, kitty).
+- **Plots drawn inline** in terminals that support images (iTerm2, WezTerm, kitty, Windows Terminal).
 - **Help pages, htmlwidgets (plotly, leaflet, DT…) and Shiny apps** open in your browser.
 - **Scripting:** pipe code in (`echo 'summary(mtcars)' | better`), with exit code 1 on an R error.
 - **Nothing installed into R.** No `languageserver`, `httpgd` or other helper packages.
@@ -104,13 +104,13 @@ g <- function() { z <- 5; browser(); z * 2 }
 g()                      # Browse[1]> prompt: type z, press Enter to step, c to continue
 name <- readline("Name? ")
 Sys.sleep(30)            # then Ctrl-C
-plot(1:10)               # drawn inline in iTerm2, WezTerm or kitty
+plot(1:10)               # drawn inline in iTerm2, WezTerm, kitty or Windows Terminal
 ?mean                    # opens the help page in your browser
 ```
 
 ### Plots, help and interactive output
 
-- **Plots** are drawn inline in terminals with an image protocol: iTerm2, WezTerm and kitty. Elsewhere, `better` prints a short note instead. To force a protocol, set `BETTER_INLINE_IMAGES=iterm` or `kitty`, or `none` to turn images off. VS Code's integrated terminal can show them with `BETTER_INLINE_IMAGES=iterm` and the setting `terminal.integrated.enableImages` turned on.
+- **Plots** are drawn inline in terminals with an image protocol: iTerm2, WezTerm, kitty, and Windows Terminal 1.22 or later (as Sixel). Elsewhere, `better` prints a short note instead. To force a protocol, set `BETTER_INLINE_IMAGES=iterm`, `kitty` or `sixel` (for other Sixel terminals, such as foot or xterm), or `none` to turn images off; use `none` if an older Windows Terminal prints garbage instead of plots. VS Code's integrated terminal can show them with `BETTER_INLINE_IMAGES=iterm` and the setting `terminal.integrated.enableImages` turned on.
 - **Help pages** (`?mean`, `help("lm")`, `??regression`), **htmlwidgets** (plotly, leaflet, DT, …) and **Shiny apps** open in your default browser, or in the program named by `$BROWSER`.
 
 ### Command-line options
@@ -141,7 +141,7 @@ better < analysis.R
 
 | Variable | Effect |
 |---|---|
-| `BETTER_INLINE_IMAGES` | `iterm`, `kitty` or `none`: overrides inline-image detection |
+| `BETTER_INLINE_IMAGES` | `iterm`, `kitty`, `sixel` or `none`: overrides inline-image detection |
 | `BETTER_HISTORY` | History file (default: `~/Library/Application Support/better/history.txt` on macOS, `~/.local/share/better/history.txt` on Linux) |
 | `BROWSER` | Program used to open help pages, htmlwidgets and apps |
 | `BETTER_STANDARD_DLL_SEARCH` | Windows only: `1` loads R's libraries with the standard DLL search order (which includes `PATH`), as conda's R needs |
