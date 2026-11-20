@@ -122,9 +122,12 @@ def command_line(pid):
 
 class Term:
     """Drives the console, answering cursor-position queries as a terminal does
-    (reedline sends them on Unix)."""
+    (reedline sends them on Unix). At startup the console asks (on Unix) whether
+    the terminal supports the kitty keyboard protocol: the primary device
+    attributes query is always answered, the kitty one only with `kitty`."""
 
-    def __init__(self, args=(), cwd=None, env=None):
+    def __init__(self, args=(), cwd=None, env=None, kitty=False):
+        self.kitty = kitty
         env = {**os.environ, "BETTER_HISTORY": os.path.join(tempfile.mkdtemp(), "history.txt"),
                "BETTER_INLINE_IMAGES": "iterm", "BROWSER": FAKE_BROWSER, **(env or {})}
         self.p = Pty(args, cwd, env)
@@ -134,6 +137,13 @@ class Term:
     def _take(self, chunk):
         for _ in range(chunk.count("\x1b[6n")):
             self.p.send("\x1b[1;1R")
+        if WINDOWS:
+            return
+        if self.kitty:
+            for _ in range(chunk.count("\x1b[?u")):
+                self.p.send("\x1b[?0u")
+        for _ in range(chunk.count("\x1b[c")):
+            self.p.send("\x1b[?62;22c")
 
     def expect(self, *patterns, timeout=30):
         """Matches `patterns` in order."""
@@ -200,6 +210,11 @@ def check(name, ok, detail=""):
 
 t = Term()
 check("startup banner + prompt", t.expect("Ctrl-D quits", READY, TOP, timeout=60))
+# Without the kitty protocol, Unix terminals send Shift-Enter as plain Enter;
+# Windows reports it through the console API.
+NEWLINE_KEY = "Shift-Enter" if WINDOWS else "Alt-Enter"
+check(f"banner advertises {NEWLINE_KEY} for a newline", f"{NEWLINE_KEY} newline" in ANSI.sub("", t.raw),
+      ANSI.sub("", t.raw))
 
 t.run("x <- 42")
 ok, out = t.run("x * 2")
@@ -220,6 +235,16 @@ t.expect(r"\+ ", timeout=10)
 t.run("}")
 ok, out = t.run("f(1)")
 check("multiline function works", ok and "[1] 2" in out, out)
+
+if not WINDOWS:
+    # Alt-Enter (ESC CR, also what the VS Code extension sends for Shift-Enter
+    # where the terminal can't report it): a newline, so nothing runs until Enter.
+    t.raw = ""
+    t.send("11 + 1\x1b\r")
+    t.idle(1)
+    ran_early = "[1] 12" in ANSI.sub("", t.raw)
+    ok, out = t.run("22 + 1")
+    check("Alt-Enter inserts a newline", not ran_early and ok and "[1] 12" in out and "[1] 23" in out, out)
 
 t.run("y <- mtcars")
 t.raw = ""
@@ -376,8 +401,10 @@ SHIFT_ENTER = "\x1b[13;28;13;1;16;1_" if WINDOWS else "\x1b[13;2u"
 # Also a session in Windows Terminal (`WT_SESSION`), with nothing else that
 # would pick an image protocol, so plots must come out as Sixel.
 t = Term(env={"WT_SESSION": "pty-smoke", "BETTER_INLINE_IMAGES": "", "TERM_PROGRAM": "", "LC_TERMINAL": "",
-              "KITTY_WINDOW_ID": ""})
-t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+              "KITTY_WINDOW_ID": ""}, kitty=True)
+ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+check("banner advertises Shift-Enter where the terminal reports it", ok and "Shift-Enter newline" in ANSI.sub("", t.raw),
+      ANSI.sub("", t.raw))
 t.raw = ""
 t.send("11 + 1" + SHIFT_ENTER)
 t.idle(1)
@@ -432,7 +459,10 @@ with socket.socket() as server:
     server.bind(("127.0.0.1", 0))
     server.listen(1)
     server.settimeout(60)
-    t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])], env={"BETTER_IDE_TOKEN": token})
+    # BETTER_SHIFT_ENTER: the host maps Shift-Enter itself (as the extension
+    # does where VS Code's terminal can't report it).
+    t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])],
+             env={"BETTER_IDE_TOKEN": token, "BETTER_SHIFT_ENTER": "1"})
     try:
         ide, _ = server.accept()
         ide_lines = ide.makefile("r", encoding="utf-8")
@@ -443,6 +473,8 @@ with socket.socket() as server:
     argv = command_line(t.p.pid)
     check("IDE token is not on the console's command line", argv.strip() != "" and token not in argv, argv)
     ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+    check("banner advertises Shift-Enter when the host maps it", ok and "Shift-Enter newline" in ANSI.sub("", t.raw),
+          ANSI.sub("", t.raw))
     if ide:
         t.raw = ""
         ide.sendall((json.dumps({"type": "execute", "code": 'cat("from the IDE\\n")'}) + "\n").encode())

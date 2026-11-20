@@ -319,12 +319,14 @@ impl Repl {
                 Origin::Spawned(_) => "new session",
                 Origin::Attached(_) => "attached to running session",
             };
+            let kitty = reedline::kitty_protocol_available();
+            let newline = if shift_enter_distinct(kitty) { "Shift-Enter" } else { "Alt-Enter" };
             let dim = Color::DarkGray.normal();
             println!("{}", Color::Blue.bold().paint(r_version.trim()));
             println!("{}", dim.paint(format!("ark {ark} · {how}")));
-            println!("{}", dim.paint("Tab completes · Shift-Enter newline · Ctrl-C interrupts · Ctrl-D quits"));
+            println!("{}", dim.paint(format!("Tab completes · {newline} newline · Ctrl-C interrupts · Ctrl-D quits")));
             repl.replay_startup_output();
-            repl.editor = Some(repl.build_editor(backend)?);
+            repl.editor = Some(repl.build_editor(backend, kitty)?);
             repl.spawn_idle_pump();
             repl.input_editor = Some(Reedline::create());
         }
@@ -345,7 +347,9 @@ impl Repl {
         self.finish_line();
     }
 
-    fn build_editor(&self, backend: CompletionBackend) -> Result<Reedline> {
+    /// `kitty`: whether the terminal supports the kitty keyboard protocol
+    /// (asked once at startup, see `kitty_protocol_available`).
+    fn build_editor(&self, backend: CompletionBackend, kitty: bool) -> Result<Reedline> {
         let mut keybindings = default_emacs_keybindings();
         // Completion pops up as you type; Tab takes the highlighted suggestion
         // (or asks for suggestions when none are showing), Enter always runs.
@@ -398,7 +402,7 @@ impl Repl {
             .use_bracketed_paste(true)
             // Lets terminals that support it report Shift-Enter (bound by reedline
             // to a newline, like Alt-Enter) apart from Enter.
-            .use_kitty_keyboard_enhancement(true)
+            .use_kitty_keyboard_enhancement(kitty)
             .with_break_signal(self.wake.clone());
         if let Some(path) = history_path() {
             editor = editor.with_history(Box::new(FileBackedHistory::with_file(10_000, path)?));
@@ -991,6 +995,16 @@ fn open_with_system(target: &str) -> bool {
 #[cfg(windows)]
 fn open_with_system(target: &str) -> bool {
     open::that(target).is_ok()
+}
+
+/// Whether Shift-Enter reaches the console apart from Enter (and so inserts a
+/// newline), given whether the terminal supports the kitty keyboard protocol.
+/// Always on Windows, where keys come through the console API. Elsewhere other
+/// terminals (e.g. VTE's: GNOME Terminal, Ptyxis) send it as plain Enter,
+/// unless the host says it maps Shift-Enter itself (`BETTER_SHIFT_ENTER=1`;
+/// the VS Code extension sends Alt-Enter's sequence for it).
+fn shift_enter_distinct(kitty: bool) -> bool {
+    cfg!(windows) || kitty || std::env::var("BETTER_SHIFT_ENTER").is_ok_and(|v| v == "1")
 }
 
 fn terminal_width() -> u16 {
