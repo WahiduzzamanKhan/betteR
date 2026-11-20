@@ -24,7 +24,7 @@ jobs:
         # installed and R was installed with its installer (registry only).
         fresh: [false, true]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Without R the script still builds and installs better, and only skips
       # running R, so a missing ARM64 R build doesn't stop the job.
