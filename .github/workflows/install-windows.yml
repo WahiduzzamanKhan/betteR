@@ -1,0 +1,54 @@
+name: Windows install script
+
+# Runs install.ps1 the way a user would, on x64 and ARM64 Windows.
+on:
+  push:
+    paths:
+      - install.ps1
+      - .github/workflows/install-windows.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    name: ${{ matrix.os }}${{ matrix.fresh && ' (fresh)' || '' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+        # fresh: hide Rust and R from PATH, as on a machine where Rust isn't
+        # installed and R was installed with its installer (registry only).
+        fresh: [false, true]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Without R the script still builds and installs better, and only skips
+      # running R, so a missing ARM64 R build doesn't stop the job.
+      - uses: r-lib/actions/setup-r@v2
+        continue-on-error: true
+        with:
+          r-version: release
+
+      - name: install.ps1 (Windows PowerShell)
+        if: ${{ !matrix.fresh }}
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File install.ps1 -Yes
+
+      - name: install.ps1 (Windows PowerShell, no Rust, R only in the registry)
+        if: ${{ matrix.fresh }}
+        shell: powershell
+        run: |
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -notmatch '\\R(\\|-)|\\\.cargo\\bin' }) -join ';'
+          Remove-Item Env:R_HOME -ErrorAction SilentlyContinue
+          $env:CARGO_HOME = Join-Path $env:RUNNER_TEMP 'cargo'
+          $env:RUSTUP_HOME = Join-Path $env:RUNNER_TEMP 'rustup'
+          if (Get-Command rustup.exe -ErrorAction SilentlyContinue) { throw 'rustup is still on PATH' }
+          if (Get-Command R.exe -ErrorAction SilentlyContinue) { throw 'R is still on PATH' }
+          powershell -ExecutionPolicy Bypass -File install.ps1 -Yes
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not (Test-Path "$env:CARGO_HOME\bin\better.exe")) { throw 'better.exe was not installed into the new CARGO_HOME' }
+          if (-not [Environment]::GetEnvironmentVariable('R_HOME', 'User')) { throw 'R_HOME was not set from the registry' }

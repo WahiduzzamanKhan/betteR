@@ -36,7 +36,7 @@ betteR is built on [ark](https://github.com/posit-dev/ark), Posit's open-source 
 
 ## Requirements
 
-- **R**, installed normally. Tested with R 4.3, 4.5 and 4.6. betteR uses `$R_HOME` if it's set, otherwise the `R` on your `PATH`. The Windows R installer doesn't add R to `PATH`; see [Windows](#windows) below.
+- **R**, installed normally. Tested with R 4.3, 4.5 and 4.6. betteR uses `$R_HOME` if it's set, otherwise the `R` on your `PATH`. The Windows R installer sets neither; `install.ps1` takes care of that (see [Windows](#windows)).
 - **macOS, Linux or Windows.** Tested on macOS (Apple silicon), Linux (Ubuntu x86-64 and ARM64, Fedora) and Windows (Windows 11 x86-64 and ARM64).
 - **To build from source:** Rust 1.95 or newer (from [rustup](https://rustup.rs)), Git, and a C and C++ compiler:
 
@@ -45,11 +45,11 @@ betteR is built on [ark](https://github.com/posit-dev/ark), Posit's open-source 
   | macOS | The Xcode Command Line Tools: `xcode-select --install` |
   | Debian, Ubuntu | `sudo apt install build-essential git` |
   | Fedora | `sudo dnf install gcc gcc-c++ git` |
-  | Windows | [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (or Visual Studio) with the *Desktop development with C++* workload, which rustup offers to install. CMake and Rtools are not needed. |
+  | Windows | Only Git (`winget install --id Git.Git`): [`install.ps1`](#windows) installs Rust and the Visual Studio C++ build tools if they're missing. |
 
 ## Installation
 
-There are no prebuilt binaries yet, so install from source:
+There are no prebuilt binaries yet, so install from source. On Windows, use [`install.ps1`](#windows) instead; on macOS and Linux:
 
 ```sh
 git clone https://github.com/WahiduzzamanKhan/betteR.git
@@ -76,16 +76,25 @@ To update later, pull the latest changes and run `cargo install --path .` again.
 
 ### Windows
 
-- **The commands above work in PowerShell.** `cargo install` puts `better.exe` in `%USERPROFILE%\.cargo\bin`, which rustup adds to your `PATH`. Open a new terminal afterwards so it picks up the change.
-- **Make R findable.** The R installer doesn't put R on `PATH`. Either add R's `bin` folder to your user `PATH` (for example `C:\Program Files\R\R-4.5.2\bin`), or set `R_HOME` to the R folder (`C:\Program Files\R\R-4.5.2`). Check with `R --version` in a new terminal.
-- **Windows on ARM** works natively, with R's ARM64 build. To build `better` there, the `ring` crate needs Clang (install *C++ Clang Compiler for Windows* in the Visual Studio Installer, or LLVM), and Clang only finds the Windows headers inside the ARM64 developer environment. So run `cargo install` from a PowerShell where you've loaded it (adjust the path to your Visual Studio):
+Install [R](https://cran.r-project.org/bin/windows/base/) (on Windows on ARM, R's ARM64 build) and Git, then run this in PowerShell:
 
-  ```powershell
-  $vs = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
-  Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-  Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=arm64 -host_arch=arm64"
-  ```
-- **conda's R** needs Windows' standard DLL search order: set `BETTER_STANDARD_DLL_SEARCH=1` (see [Environment variables](#environment-variables)).
+```powershell
+git clone https://github.com/WahiduzzamanKhan/betteR.git
+cd betteR
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+`install.ps1` asks before it installs anything, then:
+
+- installs the Visual Studio C++ build tools with winget, or adds what's missing to the Visual Studio you have. Windows asks for administrator rights once. CMake and Rtools are not needed.
+- installs Rust with rustup, if it isn't installed;
+- builds `better` for your R's architecture (x64 or ARM64), and on Windows on ARM sets up the Clang compiler environment the build needs there;
+- installs `better.exe` into `%USERPROFILE%\.cargo\bin`, which rustup puts on your `PATH`, and checks that R runs in it;
+- offers to set `R_HOME` if R can only be found in the registry, as after a normal R install, because `better` looks for R through `R_HOME` or `PATH`.
+
+Open a new terminal afterwards, so it picks up the new `PATH` and `R_HOME`. To update, pull the latest changes and run `install.ps1` again. `-Yes` answers yes to every question.
+
+**conda's R** needs Windows' standard DLL search order: set `BETTER_STANDARD_DLL_SEARCH=1` (see [Environment variables](#environment-variables)).
 
 ## Usage
 
