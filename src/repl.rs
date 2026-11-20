@@ -725,6 +725,12 @@ impl Repl {
             PlotEvent::Handled => return,
             PlotEvent::Image(png) => return self.show_image(&png),
             PlotEvent::Open { target, title } => return self.open_externally(&target, &title),
+            PlotEvent::Note(note) => {
+                self.clear_prompt();
+                self.finish_line();
+                self.write(note, Some(Color::DarkGray.normal()));
+                return self.finish_line();
+            },
         }
         let c = &msg.content;
         match msg.msg_type() {

@@ -348,6 +348,9 @@ check("?mean opens the R help page in the browser", ok and "/library/base/html/m
 ok, out = t.run("plot(1:3)")
 check("plot drawn inline (iTerm2 image protocol)", ok and "\x1b]1337;File=inline=1" in t.raw, out[-200:])
 
+ok, out = t.run("View(mtcars)")
+check("View() says it needs the VS Code extension", ok and "only works in VS Code" in out, out[-200:])
+
 t.raw = ""
 t.send("Sys.sleep(30); print('not interrupted')\r")
 t.idle(1.5)

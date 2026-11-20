@@ -51,6 +51,8 @@ pub enum PlotEvent {
     /// Interactive output (an htmlwidget file, a local web app URL, a file to
     /// open) with no IDE to show it: hand it to the system browser/opener.
     Open { target: String, title: String },
+    /// Something only the IDE can show (e.g. `View(df)`): say so.
+    Note(&'static str),
 }
 
 pub struct PlotRelay {
@@ -162,7 +164,9 @@ impl PlotRelay {
             // it with `comm_rpc`; ark sends `schema_update` / `data_update`
             // when the variable changes and closes the comm when it's gone.
             "comm_open" if c["target_name"] == DATA_EXPLORER_COMM_TARGET => {
-                let Some(ide) = &self.ide else { return PlotEvent::None };
+                let Some(ide) = &self.ide else {
+                    return PlotEvent::Note("[View(): the data viewer only works in VS Code, with the betteR extension]");
+                };
                 self.data_comms.lock().unwrap().insert(comm_id.to_string());
                 ide.send(json!({
                     "type": "comm_open",
