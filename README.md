@@ -36,9 +36,16 @@ betteR is built on [ark](https://github.com/posit-dev/ark), Posit's open-source 
 
 ## Requirements
 
-- **R**, installed normally. Tested with R 4.3 and 4.6.
-- **macOS or Linux.** Windows is not supported yet. betteR has been tested on macOS.
-- **To build from source:** Rust 1.95 or newer (from [rustup](https://rustup.rs)), Git, and a C compiler (on macOS, the Xcode Command Line Tools: `xcode-select --install`).
+- **R**, installed normally. Tested with R 4.3, 4.5 and 4.6. betteR uses `$R_HOME` if it's set, otherwise the `R` on your `PATH`. The Windows R installer doesn't add R to `PATH`; see [Windows](#windows) below.
+- **macOS, Linux or Windows.** Tested on macOS (Apple silicon), Linux (Ubuntu x86-64 and ARM64, Fedora) and Windows (Windows 11 x86-64 and ARM64).
+- **To build from source:** Rust 1.95 or newer (from [rustup](https://rustup.rs)), Git, and a C and C++ compiler:
+
+  | OS | Compiler |
+  |---|---|
+  | macOS | The Xcode Command Line Tools: `xcode-select --install` |
+  | Debian, Ubuntu | `sudo apt install build-essential git` |
+  | Fedora | `sudo dnf install gcc gcc-c++ git` |
+  | Windows | [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (or Visual Studio) with the *Desktop development with C++* workload, which rustup offers to install. CMake and Rtools are not needed. |
 
 ## Installation
 
@@ -65,7 +72,20 @@ better --version
 echo 'R.version.string' | better
 ```
 
-To update later, pull the latest changes and run `cargo install --path .` again. To uninstall, run `cargo uninstall better`.
+To update later, pull the latest changes and run `cargo install --path .` again. If you use [betteR for VS Code](https://github.com/WahiduzzamanKhan/vs_code_betteR), update it at the same time: the extension and `better` talk to each other, and versions from different times may not understand each other. To uninstall, run `cargo uninstall better`.
+
+### Windows
+
+- **The commands above work in PowerShell.** `cargo install` puts `better.exe` in `%USERPROFILE%\.cargo\bin`, which rustup adds to your `PATH`. Open a new terminal afterwards so it picks up the change.
+- **Make R findable.** The R installer doesn't put R on `PATH`. Either add R's `bin` folder to your user `PATH` (for example `C:\Program Files\R\R-4.5.2\bin`), or set `R_HOME` to the R folder (`C:\Program Files\R\R-4.5.2`). Check with `R --version` in a new terminal.
+- **Windows on ARM** works natively, with R's ARM64 build. To build `better` there, the `ring` crate needs Clang (install *C++ Clang Compiler for Windows* in the Visual Studio Installer, or LLVM), and Clang only finds the Windows headers inside the ARM64 developer environment. So run `cargo install` from a PowerShell where you've loaded it (adjust the path to your Visual Studio):
+
+  ```powershell
+  $vs = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+  Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+  Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=arm64 -host_arch=arm64"
+  ```
+- **conda's R** needs Windows' standard DLL search order: set `BETTER_STANDARD_DLL_SEARCH=1` (see [Environment variables](#environment-variables)).
 
 ## Usage
 
@@ -142,16 +162,17 @@ better < analysis.R
 | Variable | Effect |
 |---|---|
 | `BETTER_INLINE_IMAGES` | `iterm`, `kitty`, `sixel` or `none`: overrides inline-image detection |
-| `BETTER_HISTORY` | History file (default: `~/Library/Application Support/better/history.txt` on macOS, `~/.local/share/better/history.txt` on Linux) |
+| `BETTER_HISTORY` | History file (default: `~/Library/Application Support/better/history.txt` on macOS, `~/.local/share/better/history.txt` on Linux, `%APPDATA%\better\history.txt` on Windows) |
 | `BROWSER` | Program used to open help pages, htmlwidgets and apps |
 | `BETTER_STANDARD_DLL_SEARCH` | Windows only: `1` loads R's libraries with the standard DLL search order (which includes `PATH`), as conda's R needs |
 | `R_HOME` | Which R installation to use (default: the `R` on your `PATH`) |
+| `BETTER_IDE_TOKEN` | Internal: the token `--ide` proves itself with, set by the VS Code extension |
 
 ## Troubleshooting
 
 - **"R session ended abnormally"**: R crashed. The message gives the path of the session log, which is kept for diagnosis.
 - **Plots show as a note instead of an image**: your terminal doesn't support inline images. Use one that does, or set `BETTER_INLINE_IMAGES`.
-- **"Can't find R"**: make sure `R` runs from the same shell. betteR uses `$R_HOME` if set, otherwise the `R` on your `PATH`. Set `R_HOME` to choose a specific R installation.
+- **"Can't find R"**: make sure `R` runs from the same shell. betteR uses `$R_HOME` if set, otherwise the `R` on your `PATH`. Set `R_HOME` to choose a specific R installation. On Windows, R isn't on `PATH` after installing it; see [Windows](#windows).
 
 ## Limitations
 
@@ -164,6 +185,8 @@ cargo build                                        # debug build in target/debug
 cargo test                                         # unit tests
 uv run --with pexpect python tests/pty_smoke.py    # end-to-end tests in a real terminal
 ```
+
+On Windows, the end-to-end tests run in a ConPTY: `uv run --with pywinpty python tests/pty_smoke.py target/debug/better.exe`.
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org). For how the console works with ark, see [docs/design.md](docs/design.md).
 
