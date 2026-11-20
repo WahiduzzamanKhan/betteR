@@ -34,22 +34,23 @@ betteR also powers **betteR for VS Code** ([vs_code_betteR](https://github.com/W
 
 betteR is built on [ark](https://github.com/posit-dev/ark), Posit's open-source R kernel (MIT), which is also the engine behind Positron. ark is compiled into the `better` binary, so the only thing you need besides `better` is R. Design notes are in [docs/design.md](docs/design.md).
 
-## Requirements
-
-- **R**, installed normally. Tested with R 4.3, 4.5 and 4.6. betteR uses `$R_HOME` if it's set, otherwise the `R` on your `PATH`. The Windows R installer sets neither; `install.ps1` takes care of that (see [Windows](#windows)).
-- **macOS, Linux or Windows.** Tested on macOS (Apple silicon), Linux (Ubuntu x86-64 and ARM64, Fedora) and Windows (Windows 11 x86-64 and ARM64).
-- **To build from source:** Rust 1.95 or newer (from [rustup](https://rustup.rs)), Git, and a C and C++ compiler:
-
-  | OS | Compiler |
-  |---|---|
-  | macOS | The Xcode Command Line Tools: `xcode-select --install` |
-  | Debian, Ubuntu | `sudo apt install build-essential git` |
-  | Fedora | `sudo dnf install gcc gcc-c++ git` |
-  | Windows | Only Git (`winget install --id Git.Git`): [`install.ps1`](#windows) installs Rust and the Visual Studio C++ build tools if they're missing. |
-
 ## Installation
 
-There are no prebuilt binaries yet, so install from source. On Windows, use [`install.ps1`](#windows) instead; on macOS and Linux:
+`better` is a single, standalone binary: to run it, you need nothing but R. There are no prebuilt binaries yet, so for now you build it from source, which takes a few minutes the first time.
+
+### Requirements
+
+- **To run `better`:** R, installed normally. Tested with R 4.3, 4.5 and 4.6, on macOS (Apple silicon), Linux (Ubuntu x86-64 and ARM64, Fedora) and Windows 11 (x86-64 and ARM64). `better` finds R through `$R_HOME` if it's set, otherwise the `R` on your `PATH`.
+- **To build it:** Git, Rust 1.95 or newer and a C and C++ compiler. They're only needed for building:
+
+  | OS | What to install |
+  |---|---|
+  | macOS | [Rust](https://rustup.rs) and the Xcode Command Line Tools (`xcode-select --install`, which includes Git) |
+  | Debian, Ubuntu | [Rust](https://rustup.rs), and `sudo apt install build-essential git` |
+  | Fedora | [Rust](https://rustup.rs), and `sudo dnf install gcc gcc-c++ git` |
+  | Windows | Only Git (`winget install --id Git.Git`). [`install.ps1`](#windows) installs Rust and the Visual Studio C++ build tools if they're missing. |
+
+### macOS and Linux
 
 ```sh
 git clone https://github.com/WahiduzzamanKhan/betteR.git
@@ -57,9 +58,7 @@ cd betteR
 cargo install --path .
 ```
 
-This builds an optimised `better` (about 31 MB) and installs it into `~/.cargo/bin`. A first build downloads and compiles all dependencies, including ark, and takes a few minutes.
-
-Make sure `~/.cargo/bin` is on your `PATH`. The official rustup installer sets this up; with Homebrew's `rustup`, add it to `~/.zshrc`:
+This builds an optimised `better` (about 31 MB) and installs it into `~/.cargo/bin`. Make sure that folder is on your `PATH`. The official rustup installer sets this up; with Homebrew's `rustup`, add it to `~/.zshrc`:
 
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -71,8 +70,6 @@ Check that it works:
 better --version
 echo 'R.version.string' | better
 ```
-
-To update later, pull the latest changes and run `cargo install --path .` again. If you use [betteR for VS Code](https://github.com/WahiduzzamanKhan/vs_code_betteR), update it at the same time: the extension and `better` talk to each other, and versions from different times may not understand each other. To uninstall, run `cargo uninstall better`.
 
 ### Windows
 
@@ -92,9 +89,15 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 - installs `better.exe` into `%USERPROFILE%\.cargo\bin`, which rustup puts on your `PATH`, and checks that R runs in it;
 - offers to set `R_HOME` if R can only be found in the registry, as after a normal R install, because `better` looks for R through `R_HOME` or `PATH`.
 
-Open a new terminal afterwards, so it picks up the new `PATH` and `R_HOME`. To update, pull the latest changes and run `install.ps1` again. `-Yes` answers yes to every question.
+Open a new terminal afterwards, so it picks up the new `PATH` and `R_HOME`. `-Yes` answers yes to every question.
 
 **conda's R** needs Windows' standard DLL search order: set `BETTER_STANDARD_DLL_SEARCH=1` (see [Environment variables](#environment-variables)).
+
+### Updating and uninstalling
+
+To update, pull the latest changes and run the install command again: `cargo install --path .` on macOS and Linux, `install.ps1` on Windows. If you use [betteR for VS Code](https://github.com/WahiduzzamanKhan/vs_code_betteR), update it at the same time: the extension and `better` talk to each other, and versions from different times may not understand each other.
+
+To uninstall, run `cargo uninstall better`.
 
 ## Usage
 
