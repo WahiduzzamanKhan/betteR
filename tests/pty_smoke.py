@@ -469,7 +469,8 @@ with socket.socket() as server:
         hello = json.loads(ide_lines.readline())
     except (OSError, ValueError) as e:
         ide, hello = None, repr(e)
-    check("hosted console sends hello with its token first", hello == {"type": "hello", "token": token}, hello)
+    check("hosted console sends hello with its token and protocol first",
+          hello == {"type": "hello", "token": token, "protocol": 1}, hello)
     argv = command_line(t.p.pid)
     check("IDE token is not on the console's command line", argv.strip() != "" and token not in argv, argv)
     ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
@@ -483,6 +484,27 @@ with socket.socket() as server:
     t.quit()
     if ide:
         ide.close()
+
+# An IDE that speaks another protocol answers the hello with `incompatible`
+# and closes the channel: the console shows why and keeps working on its own.
+with socket.socket() as server:
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    server.settimeout(60)
+    t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])], env={"BETTER_IDE_TOKEN": token})
+    try:
+        ide, _ = server.accept()
+        ide.makefile("r", encoding="utf-8").readline()
+        ide.sendall((json.dumps({"type": "incompatible", "message": "smoke: update the extension"}) + "\n").encode())
+        ide.close()
+    except OSError as e:
+        print("incompatible IDE:", repr(e))
+    ok = t.expect("smoke: update the extension", READY, TOP, timeout=60)
+    check("console shows the IDE's incompatible message", ok, ANSI.sub("", t.raw)[-300:])
+    t.idle(1)
+    ok, out = t.run("1 + 1")
+    check("console keeps working after an incompatible IDE", ok and "[1] 2" in out, out[-300:])
+    t.quit()
 kernel.kill()
 kernel.wait()
 

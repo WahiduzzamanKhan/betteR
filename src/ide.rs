@@ -3,8 +3,17 @@
 //! and starts the console with `--ide <port>`, and with a secret token in the
 //! `BETTER_IDE_TOKEN` environment variable (not on the command line, where
 //! other users could read it). Any local user can connect to the port, so the
-//! console's first line is `{"type":"hello","token":"<token>"}`, and the IDE
-//! closes any connection that doesn't start with the right one.
+//! console's first line is `{"type":"hello","token":"<token>","protocol":N}`,
+//! and the IDE closes any connection that doesn't start with the right token.
+//!
+//! `protocol` is [`PROTOCOL`]. The console and the extension are installed
+//! separately, so they can come from different releases. Bump [`PROTOCOL`]
+//! whenever a message, or what it means, changes in a way the other side would
+//! get wrong, and bump the extension's `PROTOCOL` and `MIN_CONSOLE_VERSION` to
+//! match. An IDE that speaks a different protocol (or one before the field
+//! existed) answers the hello with `{"type":"incompatible","message":"…"}`,
+//! which the console shows, and closes the connection. That message is the
+//! one part of the protocol that never changes.
 //!
 //! Console -> IDE: `dap_port`, `debug` (start/stop), `complete`, `signature` and `resolve` requests,
 //! plot events (`plot_open`, `plot_update`, `plot_close`, `plot_render_reply`),
@@ -12,7 +21,7 @@
 //! help (`show_help`, `help_topic_reply`), environment explorer
 //! (`variables_event`, `comm_rpc_reply`), data explorers (`comm_open`,
 //! `comm_event`, `comm_closed`) and `prompt_state` after each execution.
-//! IDE -> console: `execute` (code + optional file location), `complete_reply`,
+//! IDE -> console: `incompatible` (see above), `execute` (code + optional file location), `complete_reply`,
 //! `signature_reply`, `resolve_reply`,
 //! plot requests (`plot_render`, `plot_settings`, `plot_close`), `help_topic`,
 //! `comm_rpc` (a JSON-RPC request on the variables or UI comm, or on a data
@@ -26,8 +35,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+
+/// The version of this channel's messages; see the module doc.
+pub const PROTOCOL: u32 = 1;
 
 pub struct Ide {
     writer: Mutex<TcpStream>,
@@ -37,6 +49,9 @@ pub struct Ide {
     /// interrupting line editing, so they're kept apart from `inbox`.
     plot_requests: Mutex<VecDeque<Value>>,
     next_id: AtomicU64,
+    /// The IDE closed the connection: requests fail at once instead of
+    /// waiting for a reply that can't come.
+    closed: Arc<AtomicBool>,
 }
 
 impl Ide {
@@ -48,7 +63,7 @@ impl Ide {
             .with_context(|| format!("connecting to the IDE on port {port}"))?;
         // Small, latency-sensitive messages (completion requests).
         stream.set_nodelay(true)?;
-        let hello = json!({ "type": "hello", "token": token }).to_string() + "\n";
+        let hello = json!({ "type": "hello", "token": token, "protocol": PROTOCOL }).to_string() + "\n";
         stream.write_all(hello.as_bytes()).context("sending hello to the IDE")?;
         let reader = BufReader::new(stream.try_clone()?);
         let ide = Arc::new(Self {
@@ -57,8 +72,10 @@ impl Ide {
             inbox: Mutex::new(VecDeque::new()),
             plot_requests: Mutex::new(VecDeque::new()),
             next_id: AtomicU64::new(1),
+            closed: Arc::new(AtomicBool::new(false)),
         });
         let weak = Arc::downgrade(&ide);
+        let closed = ide.closed.clone();
         std::thread::spawn(move || {
             for line in reader.lines() {
                 let Ok(line) = line else { break };
@@ -83,6 +100,11 @@ impl Ide {
                     ide.inbox.lock().unwrap().push_back(msg);
                     wake.store(true, Ordering::SeqCst);
                 }
+            }
+            closed.store(true, Ordering::SeqCst);
+            // Pending requests fail now rather than at their timeout.
+            if let Some(ide) = weak.upgrade() {
+                ide.pending.lock().unwrap().clear();
             }
         });
         Ok(ide)
@@ -111,6 +133,9 @@ impl Ide {
 
     /// Sends `message` with a fresh `id` and waits for the IDE's reply to it.
     pub fn request_value(&self, mut message: Value, timeout: Duration) -> Result<Value> {
+        if self.closed.load(Ordering::SeqCst) {
+            bail!("the IDE closed the connection");
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.pending.lock().unwrap().insert(id, tx);

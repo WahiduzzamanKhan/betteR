@@ -557,7 +557,15 @@ impl Repl {
         self.drain_iopub()?;
         let events = self.ide.as_ref().map(|ide| ide.take_events()).unwrap_or_default();
         for event in events {
-            if event["type"] == "execute"
+            if event["type"] == "incompatible" {
+                // The IDE speaks another protocol version and has closed the
+                // channel; the console itself keeps working.
+                let text = event["message"].as_str().unwrap_or("The IDE can't use this version of better.");
+                self.clear_prompt();
+                self.finish_line();
+                self.write(text, Some(Color::Red.normal()));
+                self.finish_line();
+            } else if event["type"] == "execute"
                 && let Some(code) = event["code"].as_str()
             {
                 self.queue.push_back(Queued {
