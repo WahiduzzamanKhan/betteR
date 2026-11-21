@@ -87,8 +87,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Ubuntu 22.04's own R is 4.1, and ark needs R >= 4.2, so R comes
+          # from CRAN's Ubuntu repository, as it must for users there.
           - image: ubuntu:22.04
-            setup: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl xz-utils r-base-core
+            setup: >-
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl xz-utils ca-certificates gnupg &&
+              curl -fsSL https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/cran.gpg &&
+              echo "deb https://cloud.r-project.org/bin/linux/ubuntu jammy-cran40/" > /etc/apt/sources.list.d/cran.list &&
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y r-base-core
           - image: ubuntu:24.04
             setup: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl xz-utils r-base-core
           - image: debian:12
@@ -99,8 +105,10 @@ jobs:
             setup: dnf install -y epel-release dnf-plugins-core && dnf config-manager --set-enabled powertools && dnf install -y xz tar R-core
           - image: rockylinux/rockylinux:9
             setup: dnf install -y epel-release dnf-plugins-core && dnf config-manager --set-enabled crb && dnf install -y xz tar R-core
+          # `which`: R's utils package runs it when loading (Sys.which); a
+          # normal openSUSE install has it, the container image doesn't.
           - image: opensuse/tumbleweed
-            setup: zypper --non-interactive install curl xz tar gzip R-base
+            setup: zypper --non-interactive install curl xz tar gzip which R-base
           - image: archlinux:latest
             setup: pacman -Syu --noconfirm curl xz tar r
     steps:
