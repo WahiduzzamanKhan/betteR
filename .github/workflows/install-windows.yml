@@ -3,6 +3,9 @@ name: Windows install script
 # Runs install.ps1 the way a user would, on x64 and ARM64 Windows.
 on:
   push:
+    # Branches only: GitHub ignores `paths` for tag pushes, so without this
+    # every release tag would run it.
+    branches: ['**']
     paths:
       - install.ps1
       - .github/workflows/install-windows.yml
