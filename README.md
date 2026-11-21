@@ -36,21 +36,86 @@ betteR is built on [ark](https://github.com/posit-dev/ark), Posit's open-source 
 
 ## Installation
 
-`better` is a single, standalone binary: to run it, you need nothing but R. There are no prebuilt binaries yet, so for now you build it from source, which takes a few minutes the first time.
+`better` is a single, standalone binary: to run it, you need nothing but R. Prebuilt binaries for macOS, Linux and Windows are on [GitHub Releases](https://github.com/WahiduzzamanKhan/betteR/releases), and the install scripts below download the right one for your computer.
 
 ### Requirements
 
-- **To run `better`:** R, installed normally. Tested with R 4.3, 4.5 and 4.6, on macOS (Apple silicon), Linux (Ubuntu x86-64 and ARM64, Fedora) and Windows 11 (x86-64 and ARM64). `better` finds R through `$R_HOME` if it's set, otherwise the `R` on your `PATH`.
-- **To build it:** Git, Rust 1.95 or newer and a C and C++ compiler. They're only needed for building:
+- **R 4.2 or newer**, installed normally. `better` finds R through `$R_HOME` if it's set, otherwise the `R` on your `PATH`. Ubuntu 22.04's own R is too old (4.1): install R from [CRAN's Ubuntu repository](https://cran.r-project.org/bin/linux/ubuntu/) instead.
+- **One of these platforms:**
 
-  | OS | What to install |
-  |---|---|
-  | macOS | [Rust](https://rustup.rs) and the Xcode Command Line Tools (`xcode-select --install`, which includes Git) |
-  | Debian, Ubuntu | [Rust](https://rustup.rs), and `sudo apt install build-essential git` |
-  | Fedora | [Rust](https://rustup.rs), and `sudo dnf install gcc gcc-c++ git` |
-  | Windows | Only Git (`winget install --id Git.Git`). [`install.ps1`](#windows) installs Rust and the Visual Studio C++ build tools if they're missing. |
+  | OS | CPU | Needs |
+  |---|---|---|
+  | macOS | Apple silicon | macOS 11 or newer |
+  | macOS | Intel | macOS 10.12 or newer |
+  | Linux | x86-64, ARM64 | glibc 2.28 or newer: RHEL, Rocky and Alma 8 or newer, Debian 11 or newer, Ubuntu 20.04 or newer, Fedora, openSUSE, Arch |
+  | Windows | x86-64, ARM64 | Windows 10 or 11 (tested on 11). On Windows on ARM, use R's ARM64 build. |
+
+  Tested with R 4.2, 4.3, 4.5 and 4.6 on macOS, Ubuntu, Debian, Fedora, Rocky Linux, openSUSE, Arch and Windows 11.
 
 ### macOS and Linux
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/WahiduzzamanKhan/betteR/releases/latest/download/better-installer.sh | sh
+```
+
+### Windows
+
+In PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/WahiduzzamanKhan/betteR/releases/latest/download/better-installer.ps1 | iex"
+```
+
+R's Windows installer puts R neither on your `PATH` nor in `R_HOME`, so `better` can't find it yet. Set `R_HOME` to your R folder once, for example:
+
+```powershell
+[Environment]::SetEnvironmentVariable('R_HOME', 'C:\Program Files\R\R-4.6.2', 'User')
+```
+
+**conda's R** also needs Windows' standard DLL search order: set `BETTER_STANDARD_DLL_SEARCH=1` (see [Environment variables](#environment-variables)).
+
+### Check that it works
+
+Both scripts install `better` into `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` on Windows) and add that folder to your `PATH`. Open a new terminal, so it picks up the new `PATH`, then run:
+
+```sh
+better --version
+echo 'R.version.string' | better
+```
+
+### Unsigned binaries
+
+The binaries aren't signed yet: there's no Apple notarization and no Windows code signing.
+
+- **macOS:** the install script isn't affected. If you download a `better` archive with a browser instead, Gatekeeper blocks it. Remove the quarantine flag with `xattr -d com.apple.quarantine better`.
+- **Windows:** SmartScreen or your antivirus may warn about the download or the first run.
+
+Each release lists the SHA-256 checksum of every archive (`sha256.sum`) if you want to check what you downloaded.
+
+### Updating and uninstalling
+
+To update, run the install command again.
+
+If you use [betteR for VS Code](https://github.com/WahiduzzamanKhan/vs_code_betteR), keep the extension and `better` on the same minor version: extension 0.2.x works with console 0.2.x. While betteR is at 0.x, a new minor version (0.2 → 0.3) can change how the two talk to each other, and patch versions (0.2.0 → 0.2.1) don't. If they don't fit, the extension says which one to update.
+
+To uninstall, delete `better` from `~/.cargo/bin` (`better.exe` from `%USERPROFILE%\.cargo\bin` on Windows), or run `cargo uninstall better` if you built it with `cargo install`.
+
+## Build from source
+
+Building takes a few minutes the first time and gives the same binary as the releases.
+
+### Requirements for building
+
+Git, Rust 1.95 or newer and a C and C++ compiler:
+
+| OS | What to install |
+|---|---|
+| macOS | [Rust](https://rustup.rs) and the Xcode Command Line Tools (`xcode-select --install`, which includes Git) |
+| Debian, Ubuntu | [Rust](https://rustup.rs), and `sudo apt install build-essential git` |
+| Fedora | [Rust](https://rustup.rs), and `sudo dnf install gcc gcc-c++ git` |
+| Windows | Only Git (`winget install --id Git.Git`). [`install.ps1`](#building-on-windows) installs Rust and the Visual Studio C++ build tools if they're missing. |
+
+### Building on macOS and Linux
 
 ```sh
 git clone https://github.com/WahiduzzamanKhan/betteR.git
@@ -64,14 +129,11 @@ This builds an optimised `better` (about 31 MB) and installs it into `~/.cargo/b
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
-Check that it works:
+To update, pull the latest changes and run `cargo install --path .` again.
 
-```sh
-better --version
-echo 'R.version.string' | better
-```
+### Building on Windows
 
-### Windows
+`install.ps1` in this repository builds `better` from source. It's a different script from `better-installer.ps1` on the releases page, which downloads a prebuilt binary.
 
 Install [R](https://cran.r-project.org/bin/windows/base/) (on Windows on ARM, R's ARM64 build) and Git, then run this in PowerShell:
 
@@ -89,15 +151,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 - installs `better.exe` into `%USERPROFILE%\.cargo\bin`, which rustup puts on your `PATH`, and checks that R runs in it;
 - offers to set `R_HOME` if R can only be found in the registry, as after a normal R install, because `better` looks for R through `R_HOME` or `PATH`.
 
-Open a new terminal afterwards, so it picks up the new `PATH` and `R_HOME`. `-Yes` answers yes to every question.
-
-**conda's R** needs Windows' standard DLL search order: set `BETTER_STANDARD_DLL_SEARCH=1` (see [Environment variables](#environment-variables)).
-
-### Updating and uninstalling
-
-To update, pull the latest changes and run the install command again: `cargo install --path .` on macOS and Linux, `install.ps1` on Windows. If you use [betteR for VS Code](https://github.com/WahiduzzamanKhan/vs_code_betteR), update it at the same time: the extension and `better` talk to each other, and versions from different times may not understand each other.
-
-To uninstall, run `cargo uninstall better`.
+Open a new terminal afterwards, so it picks up the new `PATH` and `R_HOME`. `-Yes` answers yes to every question. To update, pull the latest changes and run `install.ps1` again.
 
 ## Usage
 
@@ -185,7 +239,7 @@ better < analysis.R
 
 - **"R session ended abnormally"** or **"kernel exited during startup"**: R crashed, or couldn't start. The message gives the reason from the session log when the log has one (for example `Unsupported R version 4.1.2. Ark requires R >= 4.2.0`), and the path of the log, which is kept for diagnosis.
 - **Plots show as a note instead of an image**: your terminal doesn't support inline images. Use one that does, or set `BETTER_INLINE_IMAGES`.
-- **"Can't find R"**: make sure `R` runs from the same shell. betteR uses `$R_HOME` if set, otherwise the `R` on your `PATH`. Set `R_HOME` to choose a specific R installation. On Windows, R isn't on `PATH` after installing it; see [Windows](#windows).
+- **"Can't find R"**: make sure `R` runs from the same shell. betteR uses `$R_HOME` if set, otherwise the `R` on your `PATH`. Set `R_HOME` to choose a specific R installation. On Windows, R isn't on `PATH` or in `R_HOME` after installing it; see [Windows](#windows).
 
 ## Limitations
 
