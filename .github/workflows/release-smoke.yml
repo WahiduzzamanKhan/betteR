@@ -77,6 +77,16 @@ jobs:
           $out
           if (-not $out.Contains('[1] 2')) { throw '1 + 1 did not print [1] 2' }
 
+      # The console only says "kernel exited during startup"; ark's log says why.
+      - name: Kernel log
+        if: failure() && runner.os != 'Windows'
+        shell: bash
+        run: cat "${TMPDIR:-/tmp}"/better-*/ark.log || true
+      - name: Kernel log (Windows)
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: Get-Content "$env:TEMP\better-*\ark.log" -ErrorAction SilentlyContinue
+
   # The x64 Linux binary on the major distributions, each with its own R.
   linux-distro:
     name: ${{ matrix.image }}
@@ -128,3 +138,7 @@ jobs:
           out=$(printf 'cat(R.version.string, "\\n")\n1 + 1\n' | "$better")
           echo "$out"
           grep -qF '[1] 2' <<<"$out"
+
+      - name: Kernel log
+        if: failure()
+        run: cat /tmp/better-*/ark.log || true
