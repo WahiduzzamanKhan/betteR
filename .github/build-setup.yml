@@ -1,0 +1,27 @@
+# Extra steps before each release build (dist's `github-build-setup`).
+#
+# Windows ARM64: the `ring` crate (ark -> oak_source -> ureq -> rustls) builds
+# its assembly by calling Clang directly, and Clang only finds the Windows
+# headers and libraries through the variables Visual Studio's ARM64 developer
+# environment sets. install.ps1 does the same for local builds. Steps don't
+# share a shell, so the variables are passed on through GITHUB_ENV.
+- name: Set up Clang and the ARM64 compiler environment (Windows ARM64)
+  if: runner.os == 'Windows' && runner.arch == 'ARM64'
+  shell: pwsh
+  run: |
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    $vs = & $vswhere -latest -products * -property installationPath
+    if (-not $vs) { throw 'Visual Studio not found' }
+    $clang = @(
+      (Join-Path $vs 'VC\Tools\Llvm\ARM64\bin\clang.exe'),
+      (Join-Path $env:ProgramFiles 'LLVM\bin\clang.exe')
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $clang) { $clang = (Get-Command clang.exe -ErrorAction Stop).Source }
+    Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+    Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=arm64 -host_arch=arm64 -no_logo' | Out-Null
+    foreach ($name in 'INCLUDE', 'LIB', 'LIBPATH') {
+      "$name=$((Get-Item "env:$name").Value)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+    }
+    Split-Path $clang | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+    Write-Host "Visual Studio: $vs"
+    Write-Host "Clang: $clang"
