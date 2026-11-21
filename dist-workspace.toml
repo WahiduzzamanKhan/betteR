@@ -17,9 +17,6 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
-# TEMPORARY (testing the builds on a pull request): build and upload every
-# platform on PRs, without releasing. Remove before merging.
-pr-run-mode = "upload"
 # Steps run before each build; only Windows ARM64 needs any (see the file).
 github-build-setup = "../build-setup.yml"
 
