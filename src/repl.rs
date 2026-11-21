@@ -415,7 +415,7 @@ impl Repl {
         let mut early = Vec::new();
         let info = client.lock().unwrap().wait_ready(
             timeout,
-            || self.kernel_exited().then(|| format!("kernel exited during startup{}", self.log_hint())),
+            || self.kernel_exited().then(|| format!("kernel exited during startup{}", self.exit_details())),
             |msg| early.push(msg),
         )?;
         // Output R printed while starting (`.Rprofile`) can arrive before the
@@ -945,9 +945,13 @@ impl Repl {
         self.kernel_gone_with(&client)
     }
 
-    fn log_hint(&self) -> String {
+    /// Why a kernel we spawned stopped, from its log, and where the log is.
+    fn exit_details(&self) -> String {
         match &self.origin {
-            Origin::Spawned(k) => format!(" (see {})", k.log_file.display()),
+            Origin::Spawned(k) => match crate::arklog::failure_reason_in(&k.log_file) {
+                Some(reason) => format!(": {reason} (log: {})", k.log_file.display()),
+                None => format!(" (see {})", k.log_file.display()),
+            },
             Origin::Attached(_) => String::new(),
         }
     }
@@ -965,7 +969,10 @@ impl Repl {
                 }
                 kernel.clean_exit = kernel.exited_successfully();
                 if !kernel.clean_exit {
-                    let msg = format!("R session ended abnormally; ark log kept at {}", kernel.log_file.display());
+                    let reason = crate::arklog::failure_reason_in(&kernel.log_file)
+                        .map(|r| format!(": {r}"))
+                        .unwrap_or_default();
+                    let msg = format!("R session ended abnormally{reason}; ark log kept at {}", kernel.log_file.display());
                     eprintln!("{}", Color::LightRed.paint(msg));
                 }
                 kernel.clean_exit

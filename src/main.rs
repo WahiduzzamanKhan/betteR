@@ -1,6 +1,7 @@
 //! betteR console: a terminal R console that drives an `ark` kernel (built in) over
 //! Jupyter, with tree-sitter highlighting and LSP-backed completion.
 
+mod arklog;
 mod assist;
 mod help_box;
 mod highlight;

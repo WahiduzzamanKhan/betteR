@@ -22,7 +22,7 @@ How the console is built on ark, and what was learned about ark's protocols alon
 | Ending a session from outside (`better --shutdown -f kernel.json`) | Sends a Jupyter `shutdown_request` on control and waits up to 5 s for the `shutdown_reply`. Ark interrupts any running code and turns the request into end-of-file at R's prompt, so R quits as at `q()`: it runs `.Last` and finalizers and removes its temp directory. The VS Code extension uses this to close or restart a session, because signals don't end R cleanly: R ignores `SIGTERM` on macOS, and on Windows Node's `kill()` always kills outright. |
 | Plots | Drawn inline in terminals with an image protocol: iTerm2 and WezTerm (OSC 1337), kitty, and Windows Terminal 1.22+ (Sixel, detected by `WT_SESSION`; the PNG is decoded and reduced to 256 colours, without dithering). Override detection with `BETTER_INLINE_IMAGES=iterm|kitty|sixel|none`; VS Code's terminal works with `iterm` if `terminal.integrated.enableImages` is on. Otherwise a one-line hint is printed. When hosted by the extension, plots go to its *R Plots* pane instead. |
 | Interactive output (htmlwidgets such as plotly, leaflet and DT; Shiny apps; `viewer` output) and help pages (`?topic`, `??search`) | Opened in `$BROWSER`, or your default browser. When hosted by the extension, shown in its *R Plots* / *R Viewer* / *R Help* panels instead. |
-| Crash handling | Heartbeat plus child-process monitoring. On a crash it reports the error, exits 1 and keeps the ark log. |
+| Crash handling | Heartbeat plus child-process monitoring. On a crash it reports the error, with the reason from the ark log (its first panic, else its last `ERROR` line; `src/arklog.rs`), exits 1 and keeps the log. |
 
 ## Ark protocol findings from Phase 1
 

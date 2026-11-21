@@ -183,7 +183,7 @@ better < analysis.R
 
 ## Troubleshooting
 
-- **"R session ended abnormally"**: R crashed. The message gives the path of the session log, which is kept for diagnosis.
+- **"R session ended abnormally"** or **"kernel exited during startup"**: R crashed, or couldn't start. The message gives the reason from the session log when the log has one (for example `Unsupported R version 4.1.2. Ark requires R >= 4.2.0`), and the path of the log, which is kept for diagnosis.
 - **Plots show as a note instead of an image**: your terminal doesn't support inline images. Use one that does, or set `BETTER_INLINE_IMAGES`.
 - **"Can't find R"**: make sure `R` runs from the same shell. betteR uses `$R_HOME` if set, otherwise the `R` on your `PATH`. Set `R_HOME` to choose a specific R installation. On Windows, R isn't on `PATH` after installing it; see [Windows](#windows).
 
