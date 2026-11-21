@@ -116,7 +116,7 @@ jobs:
           better="$HOME/.cargo/bin/better"
           "$better" --version
           grep -h PRETTY_NAME /etc/os-release
-          ldd --version | head -1
+          ldd --version | sed -n 1p  # not head: with pipefail, ldd would die of SIGPIPE
           out=$(printf 'cat(R.version.string, "\\n")\n1 + 1\n' | "$better")
           echo "$out"
           grep -qF '[1] 2' <<<"$out"
