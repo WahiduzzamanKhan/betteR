@@ -4,6 +4,8 @@
 
 betteR (the command is `better`) gives R the console experience that RStudio and Positron users take for granted, in any terminal: syntax highlighting as you type, completion from your live session, a real line editor, `browser()` debugging, plots and help. It doesn't install anything into your R library, so your `renv.lock` stays clean.
 
+![betteR in a terminal: completion of data frame columns, function signatures while typing, multi-line editing, stepping through browser(), and a plot drawn inline](docs/media/betteR_demo.gif)
+
 ```text
 > y <- mtcars
 > y$c⇥
