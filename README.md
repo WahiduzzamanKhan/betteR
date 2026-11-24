@@ -257,7 +257,7 @@ uv run --with pexpect python tests/pty_smoke.py    # end-to-end tests in a real 
 
 On Windows, the end-to-end tests run in a ConPTY: `uv run --with pywinpty python tests/pty_smoke.py target/debug/better.exe`.
 
-Commits follow [Conventional Commits](https://www.conventionalcommits.org). For how the console works with ark, see [docs/design.md](docs/design.md).
+Commits follow [Conventional Commits](https://www.conventionalcommits.org). For branches and releases, see [CONTRIBUTING.md](CONTRIBUTING.md). For how the console works with ark, see [docs/design.md](docs/design.md).
 
 ## License and credits
 
