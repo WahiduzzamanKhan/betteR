@@ -149,6 +149,12 @@ pub struct Repl {
     queue: VecDeque<Queued>,
     /// We yielded mid-edit, so the prompt line is still drawn.
     prompt_on_screen: bool,
+    /// Something was printed over that prompt since, so the editor must draw
+    /// a new one (see `new_prompt_after_output`).
+    prompt_overwritten: bool,
+    /// What the line editor is built with, to build it again.
+    completion: CompletionBackend,
+    kitty: bool,
     echo_highlighter: RHighlighter,
     /// The running code was typed here (not sent by the IDE), so a debugger
     /// stop it causes should leave keyboard focus in the console.
@@ -285,6 +291,9 @@ impl Repl {
             idle_inbox: Arc::new(Mutex::new(VecDeque::new())),
             queue: VecDeque::new(),
             prompt_on_screen: false,
+            prompt_overwritten: false,
+            completion: CompletionBackend::None,
+            kitty: false,
             echo_highlighter: RHighlighter::new(),
             running_typed_input: false,
             plots: Arc::new(PlotRelay::new(None)),
@@ -345,7 +354,8 @@ impl Repl {
             println!("{}", dim.paint(format!("ark {ark} · {how}")));
             println!("{}", dim.paint(format!("Tab completes · {newline} newline · Ctrl-C interrupts · Ctrl-D quits")));
             repl.replay_startup_output();
-            repl.editor = Some(repl.build_editor(backend, kitty)?);
+            repl.editor = Some(repl.build_editor(backend.clone(), kitty)?);
+            (repl.completion, repl.kitty) = (backend, kitty);
             repl.spawn_idle_pump();
             repl.input_editor = Some(Reedline::create());
         }
@@ -566,7 +576,9 @@ impl Repl {
                 break;
             }
             let prompt = self.prompt.clone();
-            // After a yield, reedline keeps the partially typed buffer itself.
+            // After a yield, the partially typed buffer is kept (by reedline,
+            // or carried over to the new editor).
+            self.new_prompt_after_output()?;
             let editor = self.editor.as_mut().expect("interactive editor");
             match editor.read_line(&prompt)? {
                 Signal::Success(code) => {
@@ -695,7 +707,31 @@ impl Repl {
     fn clear_prompt(&mut self) {
         if std::mem::take(&mut self.prompt_on_screen) {
             print!("\r\x1b[2K");
+            self.prompt_overwritten = true;
         }
+    }
+
+    /// After a yield, reedline draws its prompt again on the rows it had, if
+    /// the cursor is still within them (`start..=start + lines drawn`), and
+    /// clears everything below. Output that took that few rows, like the echo
+    /// of code that prints nothing, would be painted over. reedline has no way
+    /// to forget the old rows, so a fresh editor (with the same history and
+    /// typed input) starts a new prompt below what was printed.
+    fn new_prompt_after_output(&mut self) -> Result<()> {
+        if !std::mem::take(&mut self.prompt_overwritten) {
+            return Ok(());
+        }
+        let Some(old) = self.editor.take() else { return Ok(()) };
+        let (buffer, cursor) = (old.current_buffer_contents().to_string(), old.current_insertion_point());
+        // Dropped first, so its history is written out for the new one to read.
+        drop(old);
+        let mut editor = self.build_editor(self.completion.clone(), self.kitty)?;
+        editor.run_edit_commands(&[
+            EditCommand::InsertString(buffer),
+            EditCommand::MoveToPosition { position: cursor, select: false },
+        ]);
+        self.editor = Some(editor);
+        Ok(())
     }
 
     /// Non-interactive mode: run piped input, stopping at the first error.

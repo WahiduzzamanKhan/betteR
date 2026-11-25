@@ -133,10 +133,17 @@ class Term:
         self.p = Pty(args, cwd, env)
         self.raw = ""
         self.buf = ""  # read, but not yet matched by `expect`
+        # The cursor row reported to cursor-position queries: always 1, or,
+        # once set, moved down by each newline printed since.
+        self.row = None
 
     def _take(self, chunk):
-        for _ in range(chunk.count("\x1b[6n")):
-            self.p.send("\x1b[1;1R")
+        parts = chunk.split("\x1b[6n")
+        for i, part in enumerate(parts):
+            if self.row is not None:
+                self.row += part.count("\n")
+            if i < len(parts) - 1:
+                self.p.send(f"\x1b[{self.row or 1};1R")
         if WINDOWS:
             return
         if self.kitty:
@@ -481,6 +488,20 @@ with socket.socket() as server:
         ide.sendall((json.dumps({"type": "execute", "code": 'cat("from the IDE\\n")'}) + "\n").encode())
         ok = ok and t.expect(r"from the IDE\r?\n", READY, TOP)
     check("hosted console runs code the IDE sends", ok, ANSI.sub("", t.raw)[-300:])
+    if ide and not WINDOWS:
+        # Code that prints nothing: its echo is the only line printed, and the
+        # next prompt must start below it rather than be drawn over it (#4).
+        # The prompt is on row 1 as far as the console knows; from here the
+        # terminal reports the cursor's real row.
+        t.raw = ""
+        t.row = 1
+        ide.sendall((json.dumps({"type": "execute", "code": "df <- mtcars"}) + "\n").encode())
+        ok = t.expect(r"df \S*<-\S* mtcars\r?\n", READY, TOP)
+        # Rows the cursor is moved to after the echo, to draw the prompt.
+        rows = set(re.findall(r"\x1b\[(\d+);\d+H", t.raw.split("mtcars", 1)[-1]))
+        t.row = None
+        check("IDE code that prints nothing stays echoed above the next prompt",
+              ok and rows == {"2"}, (rows, t.raw[-300:]))
     t.quit()
     if ide:
         ide.close()
