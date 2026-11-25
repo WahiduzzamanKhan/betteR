@@ -155,7 +155,24 @@ pub struct Repl {
     running_typed_input: bool,
     plots: Arc<PlotRelay>,
     image_protocol: Option<ImageProtocol>,
+    /// Output starting with one of R's debugger lines (`Called from:`, `debug
+    /// at`, ...), held until the prompt shows whether R really stopped in
+    /// the browser, and since when.
+    held_debug: Option<(String, Instant)>,
 }
+
+/// How R introduces the lines it prints when the browser stops (`debugging
+/// in:` comes first when a function flagged with `debug()` is called).
+const DEBUG_PREFIXES: [&str; 4] = ["Called from: ", "debugging in: ", "debug at ", "debug: "];
+
+/// Held output that no browser prompt claimed within this time is the user's own.
+const DEBUG_HOLD: Duration = Duration::from_secs(1);
+
+/// Ark hides R's debugger lines, since Positron shows the location in the
+/// editor. A terminal console needs them to follow along, so they're turned
+/// back on, unless the user set the option themselves.
+const SHOW_DEBUG_LINES: &str = "if (is.null(getOption(\"ark.debugger.filter_debug_output\"))) \
+options(ark.debugger.filter_debug_output = FALSE)";
 
 /// Code the console runs on someone else's behalf: the IDE's Run Selection or
 /// a debugger step clicked in the IDE. It is echoed as if typed.
@@ -272,9 +289,11 @@ impl Repl {
             running_typed_input: false,
             plots: Arc::new(PlotRelay::new(None)),
             image_protocol: detect_image_protocol(),
+            held_debug: None,
         };
         let info = repl.wait_ready(Duration::from_secs(60))?;
         repl.open_ui_comm()?;
+        repl.run_silently(SHOW_DEBUG_LINES)?;
         let interactive = std::io::stdin().is_terminal();
 
         if let Some((port, token)) = ide {
@@ -430,6 +449,30 @@ impl Repl {
         Ok(info)
     }
 
+    /// Runs R code that prints nothing and isn't kept in history.
+    fn run_silently(&mut self, code: &str) -> Result<()> {
+        let client = self.client.clone();
+        let client = client.lock().unwrap();
+        let request = json!({
+            "code": code,
+            "silent": true,
+            "store_history": false,
+            "user_expressions": {},
+            "allow_stdin": false,
+            "stop_on_error": false,
+        });
+        let msg_id = client.send(Channel::Shell, "execute_request", request)?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match client.poll(&[Channel::Iopub, Channel::Shell], Duration::from_millis(100))? {
+                Some((Channel::Shell, msg)) if msg.parent_id() == Some(msg_id.as_str()) => break,
+                Some((Channel::Iopub, msg)) if msg.parent_id() != Some(msg_id.as_str()) => self.handle_iopub(&msg),
+                _ => {},
+            }
+        }
+        Ok(())
+    }
+
     /// The UI comm gives us prompt changes (e.g. `Browse[1]>`) and lets R
     /// format output to the terminal width.
     fn open_ui_comm(&mut self) -> Result<()> {
@@ -555,6 +598,8 @@ impl Repl {
             self.handle_iopub(msg);
         }
         self.drain_iopub()?;
+        // Another client's code: its prompt has arrived along with its output.
+        self.release_debug(self.prompt.is_browser());
         let events = self.ide.as_ref().map(|ide| ide.take_events()).unwrap_or_default();
         for event in events {
             if event["type"] == "incompatible" {
@@ -711,6 +756,9 @@ impl Repl {
             if self.kernel_gone_with(&client) {
                 return Ok(Outcome::KernelGone);
             }
+            if self.held_debug.as_ref().is_some_and(|(_, since)| since.elapsed() > DEBUG_HOLD) {
+                self.release_debug(false);
+            }
             let channels = [Channel::Iopub, Channel::Stdin, Channel::Shell, Channel::Control];
             let Some((channel, msg)) = client.poll(&channels, Duration::from_millis(100))? else {
                 continue;
@@ -727,6 +775,8 @@ impl Repl {
                 _ => {},
             }
         }
+        // The prompt R stopped at (from the UI comm) settles any held debugger lines.
+        self.release_debug(self.prompt.is_browser());
         let error = reply.is_some_and(|r| r["status"] != "ok");
         Ok(Outcome::Done { error, interrupted })
     }
@@ -751,7 +801,7 @@ impl Repl {
                 if c["name"] == "stderr" {
                     self.write(text, Some(Color::LightRed.normal()));
                 } else {
-                    self.write(text, None);
+                    self.write_stdout(text);
                 }
             },
             "execute_result" | "display_data" => {
@@ -831,6 +881,7 @@ impl Repl {
     fn handle_input_request(&mut self, client: &KernelClient, msg: &Message) -> Result<bool> {
         let prompt = msg.content["prompt"].as_str().unwrap_or_default();
         let password = msg.content["password"].as_bool().unwrap_or(false);
+        self.release_debug(false);
         // Re-draw any partial output line (e.g. `cat("Name? ")`) as part of the prompt.
         let full_prompt = format!("{}{}", std::mem::take(&mut self.partial_line), prompt);
         if !full_prompt.is_empty() {
@@ -905,6 +956,42 @@ impl Repl {
     }
 
     fn write(&mut self, text: &str, style: Option<Style>) {
+        // Anything else printed after them means they weren't debugger lines:
+        // R prints those last, right before the browser prompt.
+        self.release_debug(false);
+        self.emit(text, style);
+    }
+
+    /// R's standard output. From a line that starts like a debugger line on,
+    /// it's held until the prompt shows what it was.
+    fn write_stdout(&mut self, text: &str) {
+        if let Some((held, _)) = &mut self.held_debug {
+            held.push_str(text);
+            return;
+        }
+        match debug_lines_start(text, self.partial_line.is_empty()) {
+            Some(i) => {
+                self.emit(&text[..i], None);
+                self.held_debug = Some((text[i..].to_string(), Instant::now()));
+            },
+            None => self.emit(text, None),
+        }
+    }
+
+    /// Prints held output: dimmed, without ark's own stepping lines, if R
+    /// stopped in the browser (`at_browser`), otherwise as it came.
+    fn release_debug(&mut self, at_browser: bool) {
+        let Some((text, _)) = self.held_debug.take() else {
+            return;
+        };
+        if at_browser {
+            self.emit(&shown_debug_lines(&text), Some(Color::DarkGray.normal()));
+        } else {
+            self.emit(&text, None);
+        }
+    }
+
+    fn emit(&mut self, text: &str, style: Option<Style>) {
         if text.is_empty() {
             return;
         }
@@ -1060,11 +1147,97 @@ fn read_password(prompt: &str) -> Result<Option<String>> {
     Ok(result)
 }
 
+/// Where output starts to look like R's debugger lines: a line starting with
+/// one of their prefixes (`at_line_start`: the text starts a new line).
+fn debug_lines_start(text: &str, at_line_start: bool) -> Option<usize> {
+    let mut line_starts = at_line_start.then_some(0).into_iter().chain(text.match_indices('\n').map(|(i, _)| i + 1));
+    line_starts.find(|&i| DEBUG_PREFIXES.iter().any(|p| text[i..].starts_with(p)))
+}
+
+/// The debugger lines worth showing. Ark steps over the calls it injects for
+/// editor breakpoints (`.ark_auto_step()`, `.ark_breakpoint()`), and R prints
+/// a line for each of those steps too; they're left out.
+fn shown_debug_lines(text: &str) -> String {
+    let mut messages: Vec<String> = Vec::new();
+    for line in text.split_inclusive('\n') {
+        match messages.last_mut() {
+            Some(message) if !DEBUG_PREFIXES.iter().any(|p| line.starts_with(p)) => message.push_str(line),
+            _ => messages.push(line.to_string()),
+        }
+    }
+    messages.retain(|m| !m.contains(".ark_auto_step(") && !m.contains(".ark_breakpoint("));
+    let cwd = std::env::current_dir().ok();
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    messages.iter().map(|m| short_debug_location(m, cwd.as_deref(), home.as_deref())).collect()
+}
+
+/// `debug at file:///home/me/project/R/a.R#4: ...` as `debug at R/a.R#4: ...`:
+/// code run from the editor has a `file://` URI, which reads better as a path
+/// relative to the working directory (or the home directory).
+fn short_debug_location(message: &str, cwd: Option<&std::path::Path>, home: Option<&std::path::Path>) -> String {
+    let Some(rest) = message.strip_prefix("debug at file://") else {
+        return message.to_string();
+    };
+    // The location ends at the first `#<line>: `.
+    let Some(end) = rest.match_indices('#').map(|(i, _)| i).find(|&i| {
+        let digits = rest[i + 1..].chars().take_while(char::is_ascii_digit).count();
+        digits > 0 && rest[i + 1 + digits..].starts_with(": ")
+    }) else {
+        return message.to_string();
+    };
+    let decoded = percent_decode(&rest[..end]);
+    // `file:///C:/x` on Windows.
+    let decoded = if cfg!(windows) { decoded.trim_start_matches('/').to_string() } else { decoded };
+    // Compare resolved paths too: on macOS `/var` and `/tmp` lead into `/private`.
+    let path = PathBuf::from(&decoded);
+    let paths = [Some(path.clone()), std::fs::canonicalize(&path).ok()];
+    let under = |base: Option<&std::path::Path>| {
+        let base = base?;
+        let bases = [Some(base.to_path_buf()), std::fs::canonicalize(base).ok()];
+        paths
+            .iter()
+            .flatten()
+            .find_map(|p| bases.iter().flatten().find_map(|b| p.strip_prefix(b).ok().map(|r| r.display().to_string())))
+    };
+    let shown = if let Some(relative) = under(cwd) {
+        relative
+    } else if let Some(relative) = under(home) {
+        format!("~/{relative}")
+    } else {
+        decoded
+    };
+    format!("debug at {shown}{}", &rest[end..])
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = (bytes[i] == b'%').then(|| text.get(i + 1..i + 3)).flatten();
+        match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            },
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            },
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
 
-    use super::{chunk_location, is_browser_prompt, split_top_level};
+    use std::path::Path;
+
+    use super::{
+        chunk_location, debug_lines_start, is_browser_prompt, short_debug_location, shown_debug_lines, split_top_level,
+    };
 
     fn texts(code: &str) -> Vec<String> {
         split_top_level(code).into_iter().map(|c| c.text).collect()
@@ -1094,6 +1267,38 @@ mod tests {
         assert_eq!(shifted[0], json!({ "start": { "line": 10, "character": 4 }, "end": { "line": 10, "character": 10 } }));
         // Second chunk ends on a later line: its end column is not shifted. "}" ends at byte 1.
         assert_eq!(shifted[1], json!({ "start": { "line": 10, "character": 12 }, "end": { "line": 12, "character": 1 } }));
+    }
+
+    #[test]
+    fn finds_where_debugger_lines_start() {
+        assert_eq!(debug_lines_start("Called from: g()\n", true), Some(0));
+        assert_eq!(debug_lines_start("y is 2 \ndebug at #6: y * 2\n", true), Some(8));
+        // Only at the start of a line.
+        assert_eq!(debug_lines_start("Called from: g()\n", false), None);
+        assert_eq!(debug_lines_start("x <- \"debug: no\"\n", true), None);
+        assert_eq!(debug_lines_start("[1] 4\n", true), None);
+    }
+
+    #[test]
+    fn leaves_out_arks_own_steps() {
+        let held = "debug at /p/a.R#3: base::.ark_auto_step(base::.ark_breakpoint(browser(), \"u\", \"1\"))\n\
+                    Called from: .ark_breakpoint(browser(), \"u\", \"1\")\n\
+                    debug at /p/a.R#3: {\n    x <- 1\n}\n";
+        assert_eq!(shown_debug_lines(held), "debug at /p/a.R#3: {\n    x <- 1\n}\n");
+        assert_eq!(shown_debug_lines("Called from: g()\n"), "Called from: g()\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shortens_file_uris_in_debug_lines() {
+        let (cwd, home) = (Some(Path::new("/home/me/proj")), Some(Path::new("/home/me")));
+        let short = |m| short_debug_location(m, cwd, home);
+        assert_eq!(short("debug at file:///home/me/proj/R/a.R#4: y * 2\n"), "debug at R/a.R#4: y * 2\n");
+        assert_eq!(short("debug at file:///home/me/my%20code/a.R#12: f(x)\n"), "debug at ~/my code/a.R#12: f(x)\n");
+        assert_eq!(short("debug at file:///tmp/a%23b.R#2: x\n"), "debug at /tmp/a#b.R#2: x\n");
+        // Code typed at the console has no file; other lines are left alone.
+        assert_eq!(short("debug at #1: a\n"), "debug at #1: a\n");
+        assert_eq!(short("Called from: g()\n"), "Called from: g()\n");
     }
 
     #[test]
