@@ -3,6 +3,7 @@
 
 mod arklog;
 mod assist;
+mod config;
 mod help_box;
 mod highlight;
 mod ide;
@@ -38,6 +39,11 @@ OPTIONS:
         --ark <PATH>              Use a separate ark binary instead of the built-in kernel
         --log <PATH>              Write the launched kernel's log here
         --no-lsp                  Disable LSP-backed completion
+        --set <KEY=VALUE>         Override a setting, e.g. --set completion.accept=enter (repeatable)
+        --config <PATH>           Read settings from this file (default: ~/.config/better/config.toml,
+                                  %APPDATA%\\better\\config.toml on Windows; or $BETTER_CONFIG)
+        --print-config            Show the settings in use and where each comes from
+        --reset-config            Reset the config file to the defaults, keeping a .bak (--yes: don't ask)
         --lsp-stdio               Bridge ark's LSP to stdin/stdout for an editor (needs -f)
         --ide <PORT>              Connect to a host IDE on 127.0.0.1:<PORT> (Run Selection, debugger,
                                   completion); its token must be in BETTER_IDE_TOKEN
@@ -50,32 +56,51 @@ Piped stdin (e.g. `echo 'summary(mtcars)' | better`) runs the input and exits.";
 
 struct Args {
     connection_file: Option<PathBuf>,
-    ark: Option<PathBuf>,
     log: Option<PathBuf>,
-    lsp: bool,
     lsp_stdio: bool,
     shutdown: bool,
     ide_port: Option<u16>,
+    /// `--config`, `--set`, and `--no-lsp` / `--ark` as the settings they set.
+    settings: config::Args,
+    print_config: bool,
+    reset_config: bool,
+    yes: bool,
 }
 
 fn parse_args() -> Result<Option<Args>> {
     let mut args = Args {
         connection_file: None,
-        ark: None,
         log: None,
-        lsp: true,
         lsp_stdio: false,
         shutdown: false,
         ide_port: None,
+        settings: config::Args::default(),
+        print_config: false,
+        reset_config: false,
+        yes: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().with_context(|| format!("{name} needs a value"));
+        if args.settings.take(&arg, &mut || value(&arg))? {
+            continue;
+        }
         match arg.as_str() {
             "-f" | "--connection-file" => args.connection_file = Some(value(&arg)?.into()),
-            "--ark" => args.ark = Some(value(&arg)?.into()),
+            "--ark" => args.settings.flags.push(config::Flag {
+                flag: "--ark",
+                key: "startup.ark".into(),
+                value: value(&arg)?,
+            }),
             "--log" => args.log = Some(value(&arg)?.into()),
-            "--no-lsp" => args.lsp = false,
+            "--no-lsp" => args.settings.flags.push(config::Flag {
+                flag: "--no-lsp",
+                key: "completion.lsp".into(),
+                value: "false".into(),
+            }),
+            "--print-config" => args.print_config = true,
+            "--reset-config" => args.reset_config = true,
+            "--yes" => args.yes = true,
             "--lsp-stdio" => args.lsp_stdio = true,
             "--shutdown" => args.shutdown = true,
             "--ide" => {
@@ -153,6 +178,23 @@ fn run() -> Result<i32> {
         return Ok(0);
     }
 
+    let config_path = config::path(args.settings.config.clone());
+    if args.reset_config {
+        let path = config_path.context("can't tell where the config file goes: no home directory")?;
+        return Ok(if config::reset(&path, args.yes)? { 0 } else { 1 });
+    }
+    let settings = config::Config::load(config_path.clone(), &args.settings.flags);
+    if args.print_config {
+        settings.print_warnings();
+        print!("{}", settings.describe());
+        return Ok(0);
+    }
+    // First start: create the template, which covers every way of installing.
+    if let Some(path) = &config_path {
+        config::write_template_if_missing(path);
+    }
+    settings.print_warnings();
+
     // Ctrl-C outside of line editing (i.e. while R is busy) interrupts the
     // kernel rather than killing the console.
     let interrupted = Arc::new(AtomicBool::new(false));
@@ -164,8 +206,8 @@ fn run() -> Result<i32> {
     let (info, origin) = match &args.connection_file {
         Some(path) => (ConnectionInfo::read(path)?, Origin::Attached(path.clone())),
         None => {
-            let program = kernel::KernelProgram::from_flag(args.ark.clone())?;
-            let (kernel, info) = kernel::spawn(&program, args.log.clone())?;
+            let program = kernel::KernelProgram::from_flag(settings.ark())?;
+            let (kernel, info) = kernel::spawn(&program, args.log.clone(), &settings)?;
             (info, Origin::Spawned(kernel))
         },
     };
@@ -181,7 +223,7 @@ fn run() -> Result<i32> {
         None => None,
     };
     let client = KernelClient::connect(&info)?;
-    let mut repl = Repl::start(client, origin, args.lsp, interrupted, ide)?;
+    let mut repl = Repl::start(client, origin, settings, interrupted, ide)?;
 
     if std::io::stdin().is_terminal() {
         repl.run()?;

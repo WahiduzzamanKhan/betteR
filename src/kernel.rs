@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
+use crate::config::Config;
 use crate::jupyter::ConnectionInfo;
 
 pub struct SpawnedKernel {
@@ -96,7 +97,11 @@ fn free_port() -> Result<u16> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
-pub fn spawn(program: &KernelProgram, log_file: Option<PathBuf>) -> Result<(SpawnedKernel, ConnectionInfo)> {
+pub fn spawn(
+    program: &KernelProgram,
+    log_file: Option<PathBuf>,
+    settings: &Config,
+) -> Result<(SpawnedKernel, ConnectionInfo)> {
     let dir = std::env::temp_dir().join(format!("better-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
@@ -126,6 +131,14 @@ pub fn spawn(program: &KernelProgram, log_file: Option<PathBuf>) -> Result<(Spaw
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // The R this console resolved (`--set startup.r_home` included), as the
+    // variable both kernels read; and its config file, for the built-in one.
+    if let Some(home) = settings.r_home() {
+        command.env("R_HOME", home);
+    }
+    if let Some(path) = &settings.path {
+        command.env("BETTER_CONFIG", path);
+    }
     // Ctrl-C in a Windows console goes to every process attached to it, and
     // nothing in the kernel handles it, so it would end the kernel. A new
     // process group ignores it. The console turns Ctrl-C into an

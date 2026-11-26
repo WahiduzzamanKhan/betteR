@@ -523,6 +523,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "streaming-iterator",
+ "toml 1.2.1+spec-1.1.0",
  "tree-sitter",
  "tree-sitter-r",
  "unicode-width",

@@ -6,10 +6,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use reedline::{CompletionResult, Completer, Span, Suggestion};
+use reedline::{CompletionResult, CompletionStatus, Completer, Span, Suggestion};
 use serde_json::{json, Value};
 use unicode_width::UnicodeWidthStr;
 
@@ -349,8 +349,16 @@ impl CompletionBackend {
     }
 }
 
-/// Typed completion pops up once a name has this many characters.
-const AUTO_PREFIX: usize = 3;
+/// When completion as you type shows suggestions (`completion.min_chars` and
+/// `completion.delay_ms`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trigger {
+    /// Name characters before the cursor.
+    pub min_chars: usize,
+    /// How long typing must pause first.
+    pub delay: Duration,
+}
+
 /// Completion as you type gives up quickly rather than stall typing.
 const AUTO_TIMEOUT: Duration = Duration::from_millis(800);
 const EXPLICIT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -377,6 +385,13 @@ pub struct LspCompleter {
     /// while that menu stays open there, any prefix gets suggestions.
     explicit: Option<(String, u64)>,
     cache: Option<Cached>,
+    trigger: Trigger,
+    /// The pause being waited for, and the line and cursor it is for.
+    waiting: Option<(Instant, String, usize)>,
+    /// The line and cursor whose pause has passed.
+    due: Option<(String, usize)>,
+    /// The menu opening that has shown suggestions: no more waiting in it.
+    shown_in: Option<u64>,
 }
 
 impl LspCompleter {
@@ -385,8 +400,20 @@ impl LspCompleter {
         docs: SharedDocs,
         tab_pressed: Arc<AtomicBool>,
         menu_openings: Arc<AtomicU64>,
+        trigger: Trigger,
     ) -> Self {
-        Self { backend, docs, tab_pressed, menu_openings, explicit: None, cache: None }
+        Self {
+            backend,
+            docs,
+            tab_pressed,
+            menu_openings,
+            explicit: None,
+            cache: None,
+            trigger,
+            waiting: None,
+            due: None,
+            shown_in: None,
+        }
     }
 
     /// The suggestions for `items`; notes which item each came from, for the
@@ -398,15 +425,15 @@ impl LspCompleter {
     }
 
     /// Whether completion as you type has anything worth showing here: a name
-    /// of at least three characters, or right after `$`, `@` or `::`; never
-    /// inside strings or comments.
-    fn wanted(line: &str, start: usize, pos: usize) -> bool {
+    /// of at least `min_chars` characters, or right after `$`, `@` or `::`;
+    /// never inside strings or comments.
+    fn wanted(line: &str, start: usize, pos: usize, min_chars: usize) -> bool {
         let before = &line[..start];
         let prefix = &line[start..pos];
         if prefix.starts_with(|c: char| c.is_ascii_digit()) || code_context(line, pos).in_string_or_comment {
             return false;
         }
-        prefix.chars().count() >= AUTO_PREFIX || before.ends_with('$') || before.ends_with('@') || before.ends_with("::")
+        prefix.chars().count() >= min_chars || before.ends_with('$') || before.ends_with('@') || before.ends_with("::")
     }
 }
 
@@ -421,11 +448,46 @@ impl Completer for LspCompleter {
             self.explicit = Some((before.to_string(), opening));
         }
         let explicit = self.explicit.as_ref().is_some_and(|(b, o)| b == before && *o == opening);
-        if !explicit && !Self::wanted(line, start, pos) {
+        if !explicit && !Self::wanted(line, start, pos, self.trigger.min_chars) {
+            self.waiting = None;
             self.docs.lock().unwrap().items.clear();
             return CompletionResult::fresh(Vec::new());
         }
+        // With a delay, a menu that hasn't shown anything yet stays empty
+        // until typing pauses: `poll_completion` then has reedline ask again.
+        // Once it shows suggestions, they follow the typing at once.
+        if !explicit && !self.trigger.delay.is_zero() && self.shown_in != Some(opening) {
+            let here = (line.to_string(), pos);
+            if self.due.take().is_none_or(|due| due != here) {
+                self.waiting = Some((Instant::now() + self.trigger.delay, here.0, here.1));
+                return CompletionResult::Pending;
+            }
+        }
+        self.waiting = None;
+        let result = self.lookup(line, pos, before, after, prefix, explicit);
+        if !result.suggestions().is_empty() {
+            self.shown_in = Some(opening);
+        }
+        result
+    }
 
+    fn poll_completion(&mut self) -> CompletionStatus {
+        let Some((deadline, ..)) = &self.waiting else {
+            return CompletionStatus::Idle;
+        };
+        // Tab doesn't wait.
+        if Instant::now() < *deadline && !self.tab_pressed.load(Ordering::SeqCst) {
+            return CompletionStatus::Pending;
+        }
+        let (_, line, pos) = self.waiting.take().expect("waiting");
+        self.due = Some((line, pos));
+        CompletionStatus::Ready
+    }
+}
+
+impl LspCompleter {
+    /// The suggestions for the word before `pos`, from the cache or ark.
+    fn lookup(&mut self, line: &str, pos: usize, before: &str, after: &str, prefix: &str, explicit: bool) -> CompletionResult {
         let reusable = self
             .cache
             .as_ref()
