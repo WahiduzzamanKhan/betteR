@@ -27,13 +27,13 @@ pub const TEMPLATE: &str = r#"[startup]
 [completion]
 # lsp = true
 # popup = "typing"        # typing | tab
-# min_chars = 1           # only with popup = "typing"
+# min_chars = 3           # only with popup = "typing"
 # delay_ms = 0            # only with popup = "typing"
 # accept = "tab"          # tab | enter
-# max_height = 5
+# max_suggestions = 5
 
 [editing]
-# shift_enter = "auto"    # auto | on | off
+# newline = "auto"        # auto | shift_enter | alt_enter | opt_enter
 
 [history]
 # size = 10000
@@ -66,13 +66,13 @@ static KEYS: &[Key] = &[
     },
     Key { name: "completion.lsp", kind: Kind::Bool, default: Value::Bool(true) },
     Key { name: "completion.popup", kind: Kind::Choice(&["typing", "tab"]), default: Value::Text(String::new()) },
-    Key { name: "completion.min_chars", kind: Kind::Int { min: 0, max: 10 }, default: Value::Int(1) },
+    Key { name: "completion.min_chars", kind: Kind::Int { min: 0, max: 10 }, default: Value::Int(3) },
     Key { name: "completion.delay_ms", kind: Kind::Int { min: 0, max: 2000 }, default: Value::Int(0) },
     Key { name: "completion.accept", kind: Kind::Choice(&["tab", "enter"]), default: Value::Text(String::new()) },
-    Key { name: "completion.max_height", kind: Kind::Int { min: 1, max: 50 }, default: Value::Int(5) },
+    Key { name: "completion.max_suggestions", kind: Kind::Int { min: 1, max: 50 }, default: Value::Int(5) },
     Key {
-        name: "editing.shift_enter",
-        kind: Kind::Choice(&["auto", "on", "off"]),
+        name: "editing.newline",
+        kind: Kind::Choice(&["auto", "shift_enter", "alt_enter", "opt_enter"]),
         default: Value::Text(String::new()),
     },
     Key { name: "history.size", kind: Kind::Int { min: 0, max: i64::MAX }, default: Value::Int(10_000) },
@@ -269,10 +269,12 @@ pub enum Accept {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ShiftEnter {
+pub enum Newline {
     Auto,
-    On,
-    Off,
+    ShiftEnter,
+    AltEnter,
+    /// Option+Enter: on macOS, the same bytes as Alt+Enter.
+    OptEnter,
 }
 
 #[derive(Clone, Debug)]
@@ -372,11 +374,11 @@ impl Config {
         }
         if let Some(value) = get("BETTER_SHIFT_ENTER") {
             let mapped = match value.as_str() {
-                "1" => "on",
-                "0" => "off",
+                "1" => "shift_enter",
+                "0" => "alt_enter",
                 other => other,
             };
-            self.deprecated("BETTER_SHIFT_ENTER", "editing.shift_enter", &value, mapped);
+            self.deprecated("BETTER_SHIFT_ENTER", "editing.newline", &value, mapped);
         }
     }
 
@@ -484,15 +486,16 @@ impl Config {
         if self.text("completion.accept") == "enter" { Accept::Enter } else { Accept::Tab }
     }
 
-    pub fn max_height(&self) -> u16 {
-        self.int("completion.max_height") as u16
+    pub fn max_suggestions(&self) -> u16 {
+        self.int("completion.max_suggestions") as u16
     }
 
-    pub fn shift_enter(&self) -> ShiftEnter {
-        match self.text("editing.shift_enter") {
-            "on" => ShiftEnter::On,
-            "off" => ShiftEnter::Off,
-            _ => ShiftEnter::Auto,
+    pub fn newline(&self) -> Newline {
+        match self.text("editing.newline") {
+            "shift_enter" => Newline::ShiftEnter,
+            "alt_enter" => Newline::AltEnter,
+            "opt_enter" => Newline::OptEnter,
+            _ => Newline::Auto,
         }
     }
 
@@ -620,11 +623,11 @@ mod tests {
         assert_eq!(c.inline_plots(), InlinePlots::Auto);
         assert!(c.lsp());
         assert_eq!(c.popup(), Popup::Typing);
-        assert_eq!(c.min_chars(), 1);
+        assert_eq!(c.min_chars(), 3);
         assert_eq!(c.delay_ms(), 0);
         assert_eq!(c.accept(), Accept::Tab);
-        assert_eq!(c.max_height(), 5);
-        assert_eq!(c.shift_enter(), ShiftEnter::Auto);
+        assert_eq!(c.max_suggestions(), 5);
+        assert_eq!(c.newline(), Newline::Auto);
         assert_eq!(c.history_size(), 10_000);
         assert!(c.history_suggestions());
         assert!(KEYS.iter().all(|k| *c.source(k.name) == Source::Default));
@@ -643,12 +646,12 @@ mod tests {
                 [completion]
                 lsp = false
                 popup = "tab"
-                min_chars = 3
+                min_chars = 0
                 delay_ms = 300
                 accept = "enter"
-                max_height = 12
+                max_suggestions = 12
                 [editing]
-                shift_enter = "off"
+                newline = "opt_enter"
                 [history]
                 size = 0
                 suggestions = false
@@ -664,11 +667,11 @@ mod tests {
         assert_eq!(c.inline_plots(), InlinePlots::Sixel);
         assert!(!c.lsp());
         assert_eq!(c.popup(), Popup::Tab);
-        assert_eq!(c.min_chars(), 3);
+        assert_eq!(c.min_chars(), 0);
         assert_eq!(c.delay_ms(), 300);
         assert_eq!(c.accept(), Accept::Enter);
-        assert_eq!(c.max_height(), 12);
-        assert_eq!(c.shift_enter(), ShiftEnter::Off);
+        assert_eq!(c.max_suggestions(), 12);
+        assert_eq!(c.newline(), Newline::OptEnter);
         assert_eq!(c.history_size(), 0);
         assert!(!c.history_suggestions());
         assert!(KEYS.iter().all(|k| *c.source(k.name) == Source::File));
@@ -706,22 +709,22 @@ mod tests {
         let c = load(
             Some(
                 "[startup]\nbanner = \"no\"\ncolour = 1\n[completion]\nmin_chars = 20\naccept = \"space\"\n\
-                 max_height = 5\n[theme]\nx = 1\n",
+                 max_suggestions = 5\n[theme]\nx = 1\n",
             ),
             &[],
             &[],
         );
         assert!(c.banner());
-        assert_eq!(c.min_chars(), 1);
+        assert_eq!(c.min_chars(), 3);
         assert_eq!(c.accept(), Accept::Tab);
         // A good entry beside bad ones still counts.
-        assert_eq!(*c.source("completion.max_height"), Source::File);
+        assert_eq!(*c.source("completion.max_suggestions"), Source::File);
         let w = c.warnings.join("\n");
         assert_eq!(c.warnings.len(), 5, "{w}");
         for needle in [
             "/cfg/config.toml: `startup.banner` must be true or false, not text; using the default (true)",
             "/cfg/config.toml: unknown setting `startup.colour`",
-            "`completion.min_chars` must be a whole number from 0 to 10, not 20; using the default (1)",
+            "`completion.min_chars` must be a whole number from 0 to 10, not 20; using the default (3)",
             "`completion.accept` must be one of \"tab\", \"enter\", not \"space\"; using the default (\"tab\")",
             "unknown setting `theme.x`",
         ] {
@@ -731,8 +734,8 @@ mod tests {
 
     #[test]
     fn a_broken_file_warns_once_and_uses_the_defaults() {
-        let c = load(Some("[completion\nmin_chars = 3\n"), &[], &[]);
-        assert_eq!(c.min_chars(), 1);
+        let c = load(Some("[completion\nmin_chars = 5\n"), &[], &[]);
+        assert_eq!(c.min_chars(), 3);
         assert_eq!(c.warnings.len(), 1, "{:?}", c.warnings);
         assert!(c.warnings[0].starts_with("/cfg/config.toml (line 1): "), "{:?}", c.warnings);
     }
@@ -741,7 +744,7 @@ mod tests {
     fn a_missing_file_is_fine() {
         let c = Config::load(Some(std::env::temp_dir().join("better-no-such-dir/config.toml")), &[]);
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
-        assert_eq!(c.min_chars(), 1);
+        assert_eq!(c.min_chars(), 3);
     }
 
     #[test]
@@ -791,22 +794,24 @@ mod tests {
     #[test]
     fn deprecated_variables_still_work_and_warn() {
         let c = load(None, &[("BETTER_SHIFT_ENTER", "1"), ("BETTER_INLINE_IMAGES", "none")], &[]);
-        assert_eq!(c.shift_enter(), ShiftEnter::On);
-        assert_eq!(*c.source("editing.shift_enter"), Source::Env("BETTER_SHIFT_ENTER"));
+        assert_eq!(c.newline(), Newline::ShiftEnter);
+        assert_eq!(*c.source("editing.newline"), Source::Env("BETTER_SHIFT_ENTER"));
         assert_eq!(c.inline_plots(), InlinePlots::None);
         assert_eq!(
             c.warnings,
             [
                 "BETTER_INLINE_IMAGES is deprecated: use the setting `startup.inline_plots` instead",
-                "BETTER_SHIFT_ENTER is deprecated: use the setting `editing.shift_enter` instead",
+                "BETTER_SHIFT_ENTER is deprecated: use the setting `editing.newline` instead",
             ]
         );
         // Empty means unset; R_HOME isn't deprecated.
         let c = load(None, &[("BETTER_INLINE_IMAGES", ""), ("R_HOME", "/r")], &[]);
         assert!(c.warnings.is_empty(), "{:?}", c.warnings);
         // A flag beats the variable.
-        let c = load(None, &[("BETTER_SHIFT_ENTER", "1")], &[set("editing.shift_enter=off")]);
-        assert_eq!(c.shift_enter(), ShiftEnter::Off);
+        let c = load(None, &[("BETTER_SHIFT_ENTER", "0")], &[]);
+        assert_eq!(c.newline(), Newline::AltEnter);
+        let c = load(None, &[("BETTER_SHIFT_ENTER", "1")], &[set("editing.newline=opt_enter")]);
+        assert_eq!(c.newline(), Newline::OptEnter);
     }
 
     #[test]

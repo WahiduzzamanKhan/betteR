@@ -18,7 +18,7 @@ use reedline::{
 use serde_json::{json, Value};
 
 use crate::assist::{AutoCompleteMode, CompletionMenu, Docs, SignatureLine, COMPLETION_MENU};
-use crate::config::{Accept, Config, Popup, ShiftEnter};
+use crate::config::{Accept, Config, Newline, Popup};
 use crate::highlight::RHighlighter;
 use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
@@ -353,9 +353,14 @@ impl Repl {
                 Origin::Attached(_) => "attached to running session",
             };
             let kitty = reedline::kitty_protocol_available();
+            let hosted = repl.ide.is_some();
+            let (key, newline) = newline_key(repl.settings.newline(), kitty, hosted);
+            if key == NewlineKey::Shift && !shift_enter_distinct(kitty, hosted) {
+                let warning = "better: editing.newline = \"shift_enter\", but this terminal sends Shift-Enter as \
+                               Enter, so it runs the line (the kitty keyboard protocol would tell them apart)";
+                eprintln!("{}", Color::DarkGray.paint(warning));
+            }
             if repl.settings.banner() {
-                let newline =
-                    if shift_enter_distinct(kitty, repl.settings.shift_enter()) { "Shift-Enter" } else { "Alt-Enter" };
                 let complete = match repl.settings.accept() {
                     Accept::Tab => "Tab completes",
                     Accept::Enter => "Enter completes",
@@ -397,7 +402,7 @@ impl Repl {
         let mut keybindings = default_emacs_keybindings();
         // Esc first, so that Enter runs the line rather than taking a suggestion.
         let run = ReedlineEvent::Multiple(vec![ReedlineEvent::Esc, ReedlineEvent::Enter]);
-        match settings.accept() {
+        let enter = match settings.accept() {
             // Tab takes the highlighted suggestion (or asks for suggestions
             // when none are showing); Enter always runs.
             Accept::Tab => {
@@ -406,7 +411,7 @@ impl Repl {
                     KeyCode::Tab,
                     ReedlineEvent::UntilFound(vec![ReedlineEvent::MenuAccept, ReedlineEvent::Menu(COMPLETION_MENU.into())]),
                 );
-                keybindings.add_binding(KeyModifiers::NONE, KeyCode::Enter, run.clone());
+                run
             },
             // Enter takes the highlighted suggestion while there are any, and
             // runs the line otherwise; Tab opens the menu, then moves through it.
@@ -416,23 +421,24 @@ impl Repl {
                     KeyCode::Tab,
                     ReedlineEvent::UntilFound(vec![ReedlineEvent::Menu(COMPLETION_MENU.into()), ReedlineEvent::MenuNext]),
                 );
-                keybindings.add_binding(
-                    KeyModifiers::NONE,
-                    KeyCode::Enter,
-                    ReedlineEvent::UntilFound(vec![ReedlineEvent::MenuAccept, run.clone()]),
-                );
+                ReedlineEvent::UntilFound(vec![ReedlineEvent::MenuAccept, run])
             },
-        }
+        };
         keybindings.add_binding(KeyModifiers::SHIFT, KeyCode::BackTab, ReedlineEvent::MenuPrevious);
-        keybindings.add_binding(
-            KeyModifiers::ALT,
-            KeyCode::Enter,
-            ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
-        );
-        // reedline binds Shift-Enter to a newline; `off` makes it run the line.
-        if settings.shift_enter() == ShiftEnter::Off {
-            keybindings.add_binding(KeyModifiers::SHIFT, KeyCode::Enter, run);
+        // Only the `editing.newline` key inserts a newline; Shift-Enter and
+        // Alt-Enter otherwise act as Enter. Hosted, the IDE binds the chosen
+        // key itself and sends Alt-Enter's ESC CR for it.
+        let hosted = self.ide.is_some();
+        let (key, _) = newline_key(settings.newline(), kitty, hosted);
+        for (modifiers, this) in [(KeyModifiers::SHIFT, NewlineKey::Shift), (KeyModifiers::ALT, NewlineKey::Alt)] {
+            let event = if this == key || (hosted && this == NewlineKey::Alt) {
+                ReedlineEvent::Edit(vec![EditCommand::InsertNewline])
+            } else {
+                enter.clone()
+            };
+            keybindings.add_binding(modifiers, KeyCode::Enter, event);
         }
+        keybindings.add_binding(KeyModifiers::NONE, KeyCode::Enter, enter);
 
         let tab_pressed = Arc::new(AtomicBool::new(false));
         let menu_openings = Arc::new(AtomicU64::new(0));
@@ -444,7 +450,7 @@ impl Repl {
             .with_word_chars("._")
             .with_default_border()
             // The height includes the border's two rows.
-            .with_max_completion_height(settings.max_height() + 2);
+            .with_max_completion_height(settings.max_suggestions() + 2);
         let trigger = Trigger { min_chars: settings.min_chars(), delay: Duration::from_millis(settings.delay_ms()) };
         let popup = settings.popup() == Popup::Typing;
 
@@ -1189,17 +1195,31 @@ fn open_with_system(target: &str) -> bool {
     open::that(target).is_ok()
 }
 
-/// Whether Shift-Enter inserts a newline (`editing.shift_enter`), given
-/// whether the terminal supports the kitty keyboard protocol. `auto`: on
-/// Windows, where keys come through the console API, and with the kitty
-/// protocol; other terminals (e.g. VTE's: GNOME Terminal, Ptyxis) send it as
-/// plain Enter. `on` is for a host that maps Shift-Enter itself (the VS Code
-/// extension sends Alt-Enter's sequence for it).
-fn shift_enter_distinct(kitty: bool, setting: ShiftEnter) -> bool {
+/// The key that inserts a newline. Option-Enter is Alt-Enter's bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum NewlineKey {
+    Shift,
+    Alt,
+}
+
+/// Whether the console can tell Shift-Enter from Enter, given whether the
+/// terminal supports the kitty keyboard protocol: on Windows, where keys come
+/// through the console API, and with the kitty protocol. Other terminals (e.g.
+/// macOS Terminal, VTE's GNOME Terminal and Ptyxis) send it as plain Enter.
+/// `hosted`: the IDE maps the key itself (VS Code sends ESC CR for it).
+fn shift_enter_distinct(kitty: bool, hosted: bool) -> bool {
+    cfg!(windows) || kitty || hosted
+}
+
+/// The newline key for `editing.newline`, and its name for the banner.
+fn newline_key(setting: Newline, kitty: bool, hosted: bool) -> (NewlineKey, &'static str) {
+    let option = if cfg!(target_os = "macos") { "Option-Enter" } else { "Alt-Enter" };
     match setting {
-        ShiftEnter::On => true,
-        ShiftEnter::Off => false,
-        ShiftEnter::Auto => cfg!(windows) || kitty,
+        Newline::Auto if shift_enter_distinct(kitty, hosted) => (NewlineKey::Shift, "Shift-Enter"),
+        Newline::Auto => (NewlineKey::Alt, option),
+        Newline::ShiftEnter => (NewlineKey::Shift, "Shift-Enter"),
+        Newline::AltEnter => (NewlineKey::Alt, "Alt-Enter"),
+        Newline::OptEnter => (NewlineKey::Alt, option),
     }
 }
 
