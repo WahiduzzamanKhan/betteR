@@ -569,6 +569,32 @@ with socket.socket() as server:
     if ide:
         ide.close()
 
+# Hosted, editing.newline comes only from --set (the IDE's own settings): a
+# value in config.toml is ignored, or the banner would name a key the IDE
+# doesn't send the newline for.
+newline_env = isolated_env({"BETTER_IDE_TOKEN": token})
+os.makedirs(os.path.dirname(newline_env["BETTER_CONFIG"]))
+with open(newline_env["BETTER_CONFIG"], "w") as f:
+    f.write('[editing]\nnewline = "alt_enter"\n')
+for flags, banner in (({}, "Shift-Enter"), ({"editing.newline": "alt_enter"}, "Alt-Enter")):
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(60)
+        t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])], env=newline_env,
+                 settings={**SETTINGS, **flags})
+        try:
+            ide, _ = server.accept()
+        except OSError:
+            ide = None
+        ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+        out = ANSI.sub("", t.raw)
+        how = "with --set editing.newline=alt_enter" if flags else 'with newline = "alt_enter" only in the file'
+        check(f"hosted {how}: banner names {banner}", ok and f"{banner} newline" in out, out)
+        t.quit()
+        if ide:
+            ide.close()
+
 # An IDE that speaks another protocol answers the hello with `incompatible`
 # and closes the channel: the console shows why and keeps working on its own.
 with socket.socket() as server:

@@ -183,7 +183,10 @@ fn run() -> Result<i32> {
         let path = config_path.context("can't tell where the config file goes: no home directory")?;
         return Ok(if config::reset(&path, args.yes)? { 0 } else { 1 });
     }
-    let settings = config::Config::load(config_path.clone(), &args.settings.flags);
+    let mut settings = config::Config::load(config_path.clone(), &args.settings.flags);
+    if args.ide_port.is_some() {
+        settings.hosted();
+    }
     if args.print_config {
         settings.print_warnings();
         print!("{}", settings.describe());

@@ -192,6 +192,8 @@ pub enum Source {
     Env(&'static str),
     /// `--set`, `--no-lsp` or `--ark`.
     Flag(&'static str),
+    /// The default, because `--ide` ignores the value from this source.
+    IgnoredUnderIde(Box<Source>),
 }
 
 impl fmt::Display for Source {
@@ -201,6 +203,7 @@ impl fmt::Display for Source {
             Source::File => write!(f, "file"),
             Source::Env(var) => write!(f, "env {var}"),
             Source::Flag(flag) => write!(f, "flag {flag}"),
+            Source::IgnoredUnderIde(source) => write!(f, "default; the {source} value is ignored with --ide"),
         }
     }
 }
@@ -404,6 +407,19 @@ impl Config {
         match KEYS[i].parse_text(&flag.value) {
             Ok(v) => self.values[i] = (v, Source::Flag(flag.flag)),
             Err(problem) => self.warn(format!("{}: `{}` {problem}; ignored", flag.flag, flag.key)),
+        }
+    }
+
+    /// Hosted (`--ide`): the IDE decides which key sends the newline from its
+    /// own settings, and passes `editing.newline` with `--set` when the user
+    /// set it there. A value from the file or the environment would make the
+    /// banner name a key the IDE doesn't send it for, so it's dropped, quietly
+    /// (using both is normal).
+    pub fn hosted(&mut self) {
+        let i = Self::index("editing.newline").expect("known setting");
+        let source = &self.values[i].1;
+        if !matches!(source, Source::Default | Source::Flag(_)) {
+            self.values[i] = (KEYS[i].default_value(), Source::IgnoredUnderIde(Box::new(source.clone())));
         }
     }
 
@@ -812,6 +828,29 @@ mod tests {
         assert_eq!(c.newline(), Newline::AltEnter);
         let c = load(None, &[("BETTER_SHIFT_ENTER", "1")], &[set("editing.newline=opt_enter")]);
         assert_eq!(c.newline(), Newline::OptEnter);
+    }
+
+    #[test]
+    fn under_ide_only_a_flag_sets_the_newline_key() {
+        let file = "[editing]\nnewline = \"alt_enter\"\n";
+        let mut c = load(Some(file), &[], &[]);
+        c.hosted();
+        assert_eq!(c.newline(), Newline::Auto);
+        assert_eq!(*c.source("editing.newline"), Source::IgnoredUnderIde(Box::new(Source::File)));
+        assert!(c.describe().contains("# default; the file value is ignored with --ide"), "{}", c.describe());
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+
+        let mut c = load(None, &[("BETTER_SHIFT_ENTER", "0")], &[]);
+        c.hosted();
+        assert_eq!(c.newline(), Newline::Auto);
+
+        let mut c = load(Some(file), &[], &[set("editing.newline=opt_enter")]);
+        c.hosted();
+        assert_eq!((c.newline(), c.source("editing.newline")), (Newline::OptEnter, &Source::Flag("--set")));
+        // Other settings from the file still count.
+        let mut c = load(Some("[completion]\nmin_chars = 2\n"), &[], &[]);
+        c.hosted();
+        assert_eq!(c.min_chars(), 2);
     }
 
     #[test]
