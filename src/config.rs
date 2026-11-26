@@ -560,7 +560,10 @@ pub fn path(flag: Option<PathBuf>) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn default_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("better").join("config.toml"))
+    // `%APPDATA%` first: `dirs::config_dir()` asks Windows for the folder and
+    // ignores the variable, so tests couldn't point it at a temp directory.
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from).filter(|p| p.is_absolute());
+    Some(appdata.or_else(dirs::config_dir)?.join("better").join("config.toml"))
 }
 
 #[cfg(not(windows))]

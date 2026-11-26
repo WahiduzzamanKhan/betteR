@@ -40,8 +40,9 @@ results = {}
 # config path in a fresh temp dir (where its first start writes the template),
 # and `XDG_CONFIG_HOME` points elsewhere too.
 def isolated_env(extra=None):
+    # The default config path is under XDG_CONFIG_HOME, or APPDATA on Windows.
     config_home = tempfile.mkdtemp()
-    return {**os.environ, "XDG_CONFIG_HOME": config_home,
+    return {**os.environ, "XDG_CONFIG_HOME": config_home, "APPDATA": config_home,
             "BETTER_CONFIG": os.path.join(config_home, "better", "config.toml"), **(extra or {})}
 
 
