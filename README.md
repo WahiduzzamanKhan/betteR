@@ -20,7 +20,7 @@ cyl   carb
 - **Syntax highlighting** while you type.
 - **Completion as you type, from your live session**: a pop-up appears as you type a name, or straight after `$`, `@` or `::`, with data frame columns, functions you've defined, packages and arguments, each with its package (`{base}`) in a second column. Beside the highlighted suggestion is its help, laid out with line breaks and colour: a function's usage, title, description and arguments from its help page, or its signature if it has none. Press Tab to take a suggestion, or for file paths in strings. When and how it pops up, and which key takes a suggestion, are [settings](#settings).
 - **Function signatures** under the line while you type a call, with the current argument in bold: `mean(x, trim = 0, `**`na.rm = FALSE`**`, ...)`.
-- **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Shift-Enter inserts a newline. Terminals that send Shift-Enter the same as Enter (they don't support the kitty keyboard protocol), such as macOS Terminal and GNOME Terminal, need Alt-Enter instead; the startup banner says which to use.
+- **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Shift-Enter inserts a newline. Terminals that send Shift-Enter the same as Enter (they don't support the kitty keyboard protocol), such as macOS Terminal and GNOME Terminal, use Alt-Enter (Option-Enter on a Mac) instead; the startup banner says which, and [`editing.newline`](#settings) picks another.
 - **History** with fish-style suggestions as you type, Ctrl-R reverse search and bracketed paste.
 - **`browser()` and `debug()`** with a `Browse[1]>` prompt. Enter steps, as in R.
 - **`readline()` and `menu()`** prompts.
@@ -173,7 +173,7 @@ It starts a new R session in the current directory. Quit with **Ctrl-D** or `q()
 | **↑** / **↓** (suggestions showing) | Move through the suggestions |
 | **Esc** | Close the suggestions |
 | **Enter** | Run the input as typed (even with suggestions showing), or start a new line if it isn't complete yet |
-| **Shift-Enter** | Insert a newline without running. Use **Alt-Enter** in terminals where Shift-Enter runs the line (they send it the same as Enter); the startup banner names the key that works |
+| **Shift-Enter** | Insert a newline without running. In terminals that send Shift-Enter the same as Enter, it's **Alt-Enter** (**Option-Enter** on a Mac) instead. The startup banner names the key, and [`editing.newline`](#settings) changes it; the other keys run the line like Enter |
 | **→** (at end of line) | Accept the grey suggestion from history |
 | **↑** / **↓** | Previous / next history entry |
 | **Ctrl-R** | Search history |
@@ -215,7 +215,7 @@ plot(1:10)               # drawn inline in iTerm2, WezTerm, kitty or Windows Ter
 
 ```toml
 [completion]
-min_chars = 3
+min_chars = 2
 accept = "enter"
 ```
 
@@ -229,11 +229,11 @@ Settings are read when the console starts, so restart it after a change. A setti
 | `startup.inline_plots` | `"auto"`, `"iterm"`, `"kitty"`, `"sixel"`, `"none"` | `"auto"` | How plots are drawn in the terminal. `auto` detects the terminal; `iterm` also works for VS Code's terminal with `terminal.integrated.enableImages` on, `sixel` for other Sixel terminals (foot, xterm), and `none` turns images off (use it if an older Windows Terminal prints garbage instead of plots). |
 | `completion.lsp` | `true`, `false` | `true` | Completion from ark's language server (like `--no-lsp` when `false`). |
 | `completion.popup` | `"typing"`, `"tab"` | `"typing"` | Show suggestions as you type, or only when Tab is pressed. |
-| `completion.min_chars` | 0–10 | `1` | With `popup = "typing"`: how many characters of a name must be typed before suggestions show. Right after `$`, `@` or `::` they always show. |
+| `completion.min_chars` | 0–10 | `3` | With `popup = "typing"`: how many characters of a name must be typed before suggestions show. Right after `$`, `@` or `::` they always show. |
 | `completion.delay_ms` | 0–2000 | `0` | With `popup = "typing"`: how long typing must pause, in milliseconds, before suggestions show. Each key restarts the wait; once the suggestions show, they follow your typing at once. Tab doesn't wait. |
 | `completion.accept` | `"tab"`, `"enter"` | `"tab"` | The key that takes the highlighted suggestion. With `enter`, Enter takes it while suggestions are showing and runs the line when they aren't; Tab opens the suggestions and moves to the next one. |
-| `completion.max_height` | 1–50 | `5` | Rows of suggestions shown at once. |
-| `editing.shift_enter` | `"auto"`, `"on"`, `"off"` | `"auto"` | Whether Shift-Enter inserts a newline. `auto`: where the terminal can tell Shift-Enter from Enter (the kitty keyboard protocol, Windows). `on` is for a terminal that maps Shift-Enter itself, as the VS Code extension does. Alt-Enter always inserts a newline. |
+| `completion.max_suggestions` | 1–50 | `5` | The most suggestions shown at once (the border isn't counted). With more matches, the list scrolls. |
+| `editing.newline` | `"auto"`, `"shift_enter"`, `"alt_enter"`, `"opt_enter"` | `"auto"` | The one key that inserts a newline; the others run the line, like Enter. `auto`: Shift-Enter where the terminal can tell it from Enter (the kitty keyboard protocol, Windows, VS Code), else Alt-Enter (Option-Enter on a Mac, which needs "Option as Meta" as below). `opt_enter`: Option-Enter on a Mac, which a terminal sends as Alt-Enter only with "Use Option as Meta key" turned on (Terminal: Settings → Profiles → Keyboard; iTerm2: Profiles → Keys, Left Option key "Esc+"); VS Code needs nothing. On Windows and Linux it's the same as `alt_enter`. `shift_enter` in a terminal that sends Shift-Enter as Enter prints a warning at startup, since Shift-Enter then runs the line. The banner names the key. |
 | `history.size` | 0 or more | `10000` | Lines kept in the history file. `0` keeps no history (and leaves the file as it is). |
 | `history.suggestions` | `true`, `false` | `true` | Fish-style suggestions: the rest of a matching history line in grey after the cursor; → takes it. |
 
@@ -286,7 +286,7 @@ better < analysis.R
 | Variable | Use instead |
 |---|---|
 | `BETTER_INLINE_IMAGES` (`iterm`, `kitty`, `sixel`, `none`) | `startup.inline_plots` |
-| `BETTER_SHIFT_ENTER=1` | `editing.shift_enter = "on"` |
+| `BETTER_SHIFT_ENTER` (`1`, `0`) | `editing.newline` (`1` is `"shift_enter"`, `0` is `"alt_enter"`) |
 
 ## Troubleshooting
 
