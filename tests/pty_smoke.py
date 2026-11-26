@@ -36,6 +36,19 @@ BROWSE = (READY, r"Browse\[1\]> ")
 
 results = {}
 
+# No run may read or write the user's own config file: each console gets a
+# config path in a fresh temp dir (where its first start writes the template),
+# and `XDG_CONFIG_HOME` points elsewhere too.
+def isolated_env(extra=None):
+    config_home = tempfile.mkdtemp()
+    return {**os.environ, "XDG_CONFIG_HOME": config_home,
+            "BETTER_CONFIG": os.path.join(config_home, "better", "config.toml"), **(extra or {})}
+
+
+# What the tests below assume unless they say otherwise. `min_chars = 3`: the
+# completion tests were written for a popup from the third character.
+SETTINGS = {"startup.inline_plots": "iterm", "completion.min_chars": "3"}
+
 # Records what the console asks the browser to open, instead of opening it.
 OPENED = os.path.join(tempfile.mkdtemp(), "opened.txt")
 if WINDOWS:
@@ -126,10 +139,11 @@ class Term:
     the terminal supports the kitty keyboard protocol: the primary device
     attributes query is always answered, the kitty one only with `kitty`."""
 
-    def __init__(self, args=(), cwd=None, env=None, kitty=False):
+    def __init__(self, args=(), cwd=None, env=None, kitty=False, settings=SETTINGS):
         self.kitty = kitty
-        env = {**os.environ, "BETTER_HISTORY": os.path.join(tempfile.mkdtemp(), "history.txt"),
-               "BETTER_INLINE_IMAGES": "iterm", "BROWSER": FAKE_BROWSER, **(env or {})}
+        env = isolated_env({"BETTER_HISTORY": os.path.join(tempfile.mkdtemp(), "history.txt"),
+                            "BROWSER": FAKE_BROWSER, **(env or {})})
+        args = [a for k, v in settings.items() for a in ("--set", f"{k}={v}")] + list(args)
         self.p = Pty(args, cwd, env)
         self.raw = ""
         self.buf = ""  # read, but not yet matched by `expect`
@@ -226,6 +240,13 @@ check(f"banner advertises {NEWLINE_KEY} for a newline", f"{NEWLINE_KEY} newline"
 t.run("x <- 42")
 ok, out = t.run("x * 2")
 check("execute", ok and "[1] 84" in out, out)
+
+t.run('cat("hist_marker_text\\n")')
+t.raw = ""
+t.send('cat("hist_m')
+t.idle(1)
+check("history suggestion shown in grey", "arker_text" in ANSI.sub("", t.raw), ANSI.sub("", t.raw))
+t.clear_line()
 
 t.raw = ""
 t.send("if (TRUE) print('hi') # c")
@@ -408,7 +429,7 @@ SHIFT_ENTER = "\x1b[13;28;13;1;16;1_" if WINDOWS else "\x1b[13;2u"
 # Also a session in Windows Terminal (`WT_SESSION`), with nothing else that
 # would pick an image protocol, so plots must come out as Sixel.
 t = Term(env={"WT_SESSION": "pty-smoke", "BETTER_INLINE_IMAGES": "", "TERM_PROGRAM": "", "LC_TERMINAL": "",
-              "KITTY_WINDOW_ID": ""}, kitty=True)
+              "KITTY_WINDOW_ID": ""}, kitty=True, settings={**SETTINGS, "startup.inline_plots": "auto"})
 ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
 check("banner advertises Shift-Enter where the terminal reports it", ok and "Shift-Enter newline" in ANSI.sub("", t.raw),
       ANSI.sub("", t.raw))
@@ -452,7 +473,7 @@ with open(conn, "w") as f:
     json.dump({**{p: free_port() for p in ("shell_port", "iopub_port", "stdin_port", "control_port", "hb_port")},
                "ip": "127.0.0.1", "key": "smoke", "transport": "tcp", "signature_scheme": "hmac-sha256"}, f)
 kernel = subprocess.Popen([BIN, "--kernel", "--connection_file", conn, "--log", os.path.join(session, "ark.log")],
-                          cwd=project)
+                          cwd=project, env=isolated_env())
 time.sleep(8)  # well past startup, like the extension's console
 t = Term(["--connection-file", conn])
 ok = t.expect("Ctrl-D quits", "profile stdout", "profile message", READY, TOP, timeout=60)
@@ -466,10 +487,10 @@ with socket.socket() as server:
     server.bind(("127.0.0.1", 0))
     server.listen(1)
     server.settimeout(60)
-    # BETTER_SHIFT_ENTER: the host maps Shift-Enter itself (as the extension
-    # does where VS Code's terminal can't report it).
+    # `editing.shift_enter = on`: the host maps Shift-Enter itself (as the
+    # extension does where VS Code's terminal can't report it).
     t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])],
-             env={"BETTER_IDE_TOKEN": token, "BETTER_SHIFT_ENTER": "1"})
+             env={"BETTER_IDE_TOKEN": token}, settings={**SETTINGS, "editing.shift_enter": "on"})
     try:
         ide, _ = server.accept()
         ide_lines = ide.makefile("r", encoding="utf-8")
@@ -528,6 +549,131 @@ with socket.socket() as server:
     t.quit()
 kernel.kill()
 kernel.wait()
+
+# Settings (#6).
+TEMPLATE_LINES = ("[completion]", "# min_chars = 1", "# delay_ms = 0", "# accept = \"tab\"", "# size = 10000")
+
+
+def piped(code, args=(), env=None):
+    """Runs `code` through the console's piped mode: a full start, then exit."""
+    return subprocess.run([BIN, *args], input=code, capture_output=True, text=True, timeout=120,
+                          env=env or isolated_env(), encoding="utf-8", errors="replace")
+
+
+# First start: the template is written at the default location, under
+# XDG_CONFIG_HOME (no BETTER_CONFIG); a second start leaves an edited file alone.
+env = isolated_env()
+del env["BETTER_CONFIG"]
+config = os.path.join(env["XDG_CONFIG_HOME"], "better", "config.toml")
+r = piped("1 + 1", env=env)
+written = open(config).read() if os.path.exists(config) else ""
+check("first start writes the config template", r.returncode == 0 and all(l in written for l in TEMPLATE_LINES),
+      (r.returncode, r.stderr[-300:], written))
+with open(config, "w") as f:
+    f.write("[completion]\nmin_chars = 3\n")
+r = piped("1 + 1", env=env)
+check("a second start leaves an edited config alone", open(config).read() == "[completion]\nmin_chars = 3\n",
+      open(config).read())
+
+r = subprocess.run([BIN, "--reset-config", "--yes"], capture_output=True, text=True, env=env, timeout=30)
+backup = config + ".bak"
+check("--reset-config --yes writes the template and keeps a .bak",
+      r.returncode == 0 and all(l in open(config).read() for l in TEMPLATE_LINES)
+      and open(backup).read() == "[completion]\nmin_chars = 3\n" and backup in r.stdout,
+      (r.returncode, r.stdout, r.stderr))
+
+# startup.r_home reaches the kernel the console starts (it can't start R there).
+r = piped("1 + 1", ["--set", "startup.r_home=/nonexistent/R"])
+check("startup.r_home is used for the kernel", r.returncode == 1 and "/nonexistent/R" in r.stderr, r.stderr[-400:])
+
+r = subprocess.run([BIN, "--print-config", "--set", "completion.popup=tab"], capture_output=True, text=True,
+                   env=isolated_env({"BETTER_SHIFT_ENTER": "1"}), timeout=30)
+check("deprecated BETTER_SHIFT_ENTER still works, with a warning",
+      re.search(r'editing\.shift_enter = "on" +# env BETTER_SHIFT_ENTER', r.stdout) is not None
+      and "BETTER_SHIFT_ENTER is deprecated: use the setting `editing.shift_enter`" in r.stderr,
+      (r.stdout, r.stderr))
+check("--print-config shows where each value came from",
+      re.search(r'completion\.popup = "tab" +# flag --set', r.stdout) is not None
+      and re.search(r"history\.size = 10000 +# default", r.stdout) is not None, r.stdout)
+
+# A config file with several settings, and some mistakes.
+env = isolated_env()
+os.makedirs(os.path.dirname(env["BETTER_CONFIG"]))
+with open(env["BETTER_CONFIG"], "w") as f:
+    f.write('[startup]\nbanner = false\ninline_plots = "iterm"\n\n[completion]\nmin_chars = 3\naccept = "enter"\n'
+            'colour = "red"\nmax_height = 99\n\n[history]\nsuggestions = false\n')
+t = Term(env=env, settings={})
+ok = t.expect(READY, TOP, timeout=60)
+out = ANSI.sub("", t.raw)
+check("bad config entries print a warning and the console still starts",
+      ok and "unknown setting `completion.colour`" in out and "`completion.max_height` must be a whole number from 1 to 50"
+      in out and env["BETTER_CONFIG"] in out, out)
+check("startup.banner = false hides the banner", ok and "Ctrl-D quits" not in out and "ark " not in out, out)
+
+t.run("print_me_please <- function(a, b = 2) a + b")
+t.raw = ""
+t.send("pr")
+t.idle(1)
+check("min_chars = 3: no menu after 2 characters", MENU not in t.raw, ANSI.sub("", t.raw))
+t.raw = ""
+t.send("i")
+t.idle(1.5)
+check("min_chars = 3: a menu after 3", MENU in t.raw and "print" in ANSI.sub("", t.raw), ANSI.sub("", t.raw))
+t.clear_line()
+# Not ending in a name: with accept = "enter", Enter would take a suggestion.
+t.run("df <- mtcars[1:3, ]")
+t.raw = ""
+t.send("df$")
+t.idle(1.5)
+check("min_chars = 3: a menu right after df$", MENU in t.raw and "mpg" in ANSI.sub("", t.raw), ANSI.sub("", t.raw))
+t.clear_line()
+
+t.raw = ""
+t.send("print_me")
+t.idle(1.5)
+t.send("\r")
+t.idle(1)
+ok, out = t.run("1)")
+check('completion.accept = "enter" takes a suggestion with Enter', ok and "[1] 3" in out, out)
+
+t.run('cat("hist_marker_text\\n")')
+t.raw = ""
+t.send('cat("hist_m')
+t.idle(1)
+check("history.suggestions = false shows no grey suggestion", "arker_text" not in ANSI.sub("", t.raw),
+      ANSI.sub("", t.raw))
+t.clear_line()
+t.quit()
+
+# completion.delay_ms (and the default min_chars, 1), from the command line.
+t = Term(settings={"completion.delay_ms": "300"})
+t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+t.run("print_me_please <- function(a, b = 2) a + b")
+t.raw = ""
+for ch in "print_m":
+    t.send(ch)
+    t.idle(0.06)
+typing = t.raw
+t.idle(1.5)
+check("delay_ms = 300: no menu while typing quickly", MENU not in typing, ANSI.sub("", typing))
+check("delay_ms = 300: a menu after the pause", MENU in t.raw and "print_me_please" in ANSI.sub("", t.raw),
+      ANSI.sub("", t.raw))
+t.clear_line()
+t.raw = ""
+t.send("p")
+t.idle(1.5)
+check("default min_chars = 1: a menu after one character", MENU in t.raw, ANSI.sub("", t.raw))
+t.clear_line()
+# Keys typed around the moment the timer fires.
+for i, ch in enumerate("zz_slow_name <- 7"):
+    t.send(ch)
+    t.idle(0.3 + (-0.03, -0.01, 0.0, 0.01, 0.03)[i % 5])
+t.send("\x1b")
+t.idle(0.3)
+ok, out = t.run("")
+ok, out = t.run("zz_slow_name")
+check("delay_ms = 300: no key lost", ok and "[1] 7" in out, out)
+t.quit()
 
 print()
 failed = [k for k, v in results.items() if not v]
