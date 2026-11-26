@@ -721,8 +721,9 @@ check("history.suggestions = false shows no grey suggestion", "arker_text" not i
 t.clear_line()
 t.quit()
 
-# completion.delay_ms, from the command line.
-t = Term(settings={"completion.delay_ms": "300"})
+# completion.delay_ms, from the command line. A long delay here, so a slow CI
+# machine taking a few hundred ms to echo a key doesn't count as a pause.
+t = Term(settings={"completion.delay_ms": "1000"})
 t.expect("Ctrl-D quits", READY, TOP, timeout=60)
 t.run("print_me_please <- function(a, b = 2) a + b")
 t.raw = ""
@@ -730,12 +731,16 @@ for ch in "print_m":
     t.send(ch)
     t.idle(0.06)
 typing = t.raw
-t.idle(1.5)
-check("delay_ms = 300: no menu while typing quickly", MENU not in typing, ANSI.sub("", typing))
-check("delay_ms = 300: a menu after the pause", MENU in t.raw and "print_me_please" in ANSI.sub("", t.raw),
+t.idle(3)
+check("delay_ms = 1000: no menu while typing quickly", MENU not in typing, ANSI.sub("", typing))
+check("delay_ms = 1000: a menu after the pause", MENU in t.raw and "print_me_please" in ANSI.sub("", t.raw),
       ANSI.sub("", t.raw))
 t.clear_line()
-# Keys typed around the moment the timer fires.
+t.quit()
+
+# Keys typed around the moment a 300 ms timer fires.
+t = Term(settings={"completion.delay_ms": "300"})
+t.expect("Ctrl-D quits", READY, TOP, timeout=60)
 for i, ch in enumerate("zz_slow_name <- 7"):
     t.send(ch)
     t.idle(0.3 + (-0.03, -0.01, 0.0, 0.01, 0.03)[i % 5])
