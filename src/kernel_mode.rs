@@ -14,13 +14,6 @@ pub fn requested() -> bool {
 
 /// Never returns on success: ark runs R's event loop until the session ends.
 pub fn run() -> Result<()> {
-    #[cfg(target_os = "linux")]
-    ensure_r_lib_on_loader_path()?;
-
-    // Both must happen on the main thread before any other thread exists.
-    ark::panic::mark_r_thread();
-    ark::signals::initialize_signal_block();
-
     let mut connection_file = None;
     let mut log_file = None;
     let mut session_mode = SessionMode::Console;
@@ -30,9 +23,15 @@ pub fn run() -> Result<()> {
     // the VS Code extension can ask for it without knowing the kernel's arguments.
     #[cfg(windows)]
     let mut standard_dll_search = std::env::var("BETTER_STANDARD_DLL_SEARCH").is_ok_and(|v| v == "1");
+    // `--config` and `--set`: the extension starts the kernel itself, and
+    // passes `startup.r_home` when it's set in VS Code.
+    let mut settings = crate::config::Args::default();
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
         let mut value = || args.next().with_context(|| format!("{arg} needs a value"));
+        if settings.take(&arg, &mut value)? {
+            continue;
+        }
         match arg.as_str() {
             // ark's own spelling is accepted too, so callers can treat both alike.
             "--connection-file" | "--connection_file" | "-f" => connection_file = Some(value()?),
@@ -53,6 +52,23 @@ pub fn run() -> Result<()> {
         }
     }
     let connection_file = connection_file.context("--kernel needs --connection-file")?;
+
+    // Only `startup.r_home` matters here. ark and the Linux check below find R
+    // through `R_HOME`, so the setting is passed on as that variable (from the
+    // environment, it's there already).
+    let config = crate::config::Config::load(crate::config::path(settings.config), &settings.flags);
+    config.print_warnings();
+    if let Some(home) = config.r_home() {
+        // SAFETY: no other thread exists yet.
+        unsafe { std::env::set_var("R_HOME", home) };
+    }
+
+    #[cfg(target_os = "linux")]
+    ensure_r_lib_on_loader_path()?;
+
+    // Both must happen on the main thread before any other thread exists.
+    ark::panic::mark_r_thread();
+    ark::signals::initialize_signal_block();
 
     ark::logger::init(log_file.as_deref(), None);
     ark::traps::register_trap_handlers();

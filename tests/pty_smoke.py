@@ -36,6 +36,19 @@ BROWSE = (READY, r"Browse\[1\]> ")
 
 results = {}
 
+# No run may read or write the user's own config file: each console gets a
+# config path in a fresh temp dir (where its first start writes the template),
+# and `XDG_CONFIG_HOME` points elsewhere too.
+def isolated_env(extra=None):
+    # The default config path is under XDG_CONFIG_HOME, or APPDATA on Windows.
+    config_home = tempfile.mkdtemp()
+    return {**os.environ, "XDG_CONFIG_HOME": config_home, "APPDATA": config_home,
+            "BETTER_CONFIG": os.path.join(config_home, "better", "config.toml"), **(extra or {})}
+
+
+# What the tests below assume unless they say otherwise.
+SETTINGS = {"startup.inline_plots": "iterm"}
+
 # Records what the console asks the browser to open, instead of opening it.
 OPENED = os.path.join(tempfile.mkdtemp(), "opened.txt")
 if WINDOWS:
@@ -126,10 +139,11 @@ class Term:
     the terminal supports the kitty keyboard protocol: the primary device
     attributes query is always answered, the kitty one only with `kitty`."""
 
-    def __init__(self, args=(), cwd=None, env=None, kitty=False):
+    def __init__(self, args=(), cwd=None, env=None, kitty=False, settings=SETTINGS):
         self.kitty = kitty
-        env = {**os.environ, "BETTER_HISTORY": os.path.join(tempfile.mkdtemp(), "history.txt"),
-               "BETTER_INLINE_IMAGES": "iterm", "BROWSER": FAKE_BROWSER, **(env or {})}
+        env = isolated_env({"BETTER_HISTORY": os.path.join(tempfile.mkdtemp(), "history.txt"),
+                            "BROWSER": FAKE_BROWSER, **(env or {})})
+        args = [a for k, v in settings.items() for a in ("--set", f"{k}={v}")] + list(args)
         self.p = Pty(args, cwd, env)
         self.raw = ""
         self.buf = ""  # read, but not yet matched by `expect`
@@ -210,6 +224,16 @@ class Term:
         return ok, ANSI.sub("", self.raw)
 
 
+ROW_COUNTS = {}
+
+
+def menu_rows(raw):
+    """The `print.*` suggestion rows of the last menu drawn (each draw starts
+    with a cursor save)."""
+    frames = [f for f in raw.split("\x1b7") if "╭" in f]
+    return re.findall(r"│(print\.[\w.]*) +\{base\} *│", ANSI.sub("", frames[-1])) if frames else []
+
+
 def check(name, ok, detail=""):
     results[name] = ok
     print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  [{detail!r}]" if not ok else ""), flush=True)
@@ -219,13 +243,20 @@ t = Term()
 check("startup banner + prompt", t.expect("Ctrl-D quits", READY, TOP, timeout=60))
 # Without the kitty protocol, Unix terminals send Shift-Enter as plain Enter;
 # Windows reports it through the console API.
-NEWLINE_KEY = "Shift-Enter" if WINDOWS else "Alt-Enter"
+NEWLINE_KEY = "Shift-Enter" if WINDOWS else "Option-Enter" if sys.platform == "darwin" else "Alt-Enter"
 check(f"banner advertises {NEWLINE_KEY} for a newline", f"{NEWLINE_KEY} newline" in ANSI.sub("", t.raw),
       ANSI.sub("", t.raw))
 
 t.run("x <- 42")
 ok, out = t.run("x * 2")
 check("execute", ok and "[1] 84" in out, out)
+
+t.run('cat("hist_marker_text\\n")')
+t.raw = ""
+t.send('cat("hist_m')
+t.idle(1)
+check("history suggestion shown in grey", "arker_text" in ANSI.sub("", t.raw), ANSI.sub("", t.raw))
+t.clear_line()
 
 t.raw = ""
 t.send("if (TRUE) print('hi') # c")
@@ -298,6 +329,22 @@ t.raw = ""
 t.send("\x1b[B")
 t.idle(1.5)
 check("next suggestion shows its own help", "Date Class" in ANSI.sub("", t.raw), ANSI.sub("", t.raw)[-600:])
+t.clear_line()
+
+# `print.` has dozens of matches in base: 5 rows show (max_suggestions), and
+# moving past the last one scrolls.
+t.raw = ""
+t.send("print.")
+t.idle(2)
+first = menu_rows(t.raw)
+t.raw = ""
+for _ in range(6):
+    t.send("\x1b[B")
+    t.idle(0.4)
+scrolled = menu_rows(t.raw)
+ROW_COUNTS["default"] = (len(first), len(scrolled))
+check("max_suggestions default: 5 suggestion rows with more matches", len(first) == 5, first)
+check("the menu scrolls past its last row", len(scrolled) == 5 and scrolled != first, (first, scrolled))
 t.clear_line()
 
 t.raw = ""
@@ -405,10 +452,26 @@ check("Ctrl-D exits cleanly", status == 0, status)
 # session of its own: once ConPTY has seen one win32-input-mode key, it reads
 # later control characters (Ctrl-U) as plain letters.
 SHIFT_ENTER = "\x1b[13;28;13;1;16;1_" if WINDOWS else "\x1b[13;2u"
+KITTY_ALT = "\x1b[13;3u"
+ALT_ENTER = "\x1b\r"
+
+
+def newline_case(t, key):
+    """Types `11 + 1` and `key`: "newline" if that inserted a newline (then
+    runs it with `22 + 1`), "runs" if it ran the line."""
+    t.raw = ""
+    t.send("11 + 1" + key)
+    t.idle(1)
+    if "[1] 12" in ANSI.sub("", t.raw):
+        t.expect(READY, TOP, timeout=5)
+        return "runs"
+    ok, out = t.run("22 + 1")
+    return "newline" if ok and "[1] 12" in out and "[1] 23" in out else "neither: " + out
+
 # Also a session in Windows Terminal (`WT_SESSION`), with nothing else that
 # would pick an image protocol, so plots must come out as Sixel.
 t = Term(env={"WT_SESSION": "pty-smoke", "BETTER_INLINE_IMAGES": "", "TERM_PROGRAM": "", "LC_TERMINAL": "",
-              "KITTY_WINDOW_ID": ""}, kitty=True)
+              "KITTY_WINDOW_ID": ""}, kitty=True, settings={**SETTINGS, "startup.inline_plots": "auto"})
 ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
 check("banner advertises Shift-Enter where the terminal reports it", ok and "Shift-Enter newline" in ANSI.sub("", t.raw),
       ANSI.sub("", t.raw))
@@ -418,6 +481,8 @@ t.idle(1)
 ran_early = "[1] 12" in ANSI.sub("", t.raw)
 ok, out = t.run("22 + 1")
 check("Shift-Enter inserts a newline", not ran_early and ok and "[1] 12" in out and "[1] 23" in out, out)
+if not WINDOWS:
+    check("auto with the kitty protocol: Alt-Enter runs the line", newline_case(t, KITTY_ALT) == "runs")
 
 t.raw = ""
 ok, out = t.run("plot(1:3)")
@@ -452,7 +517,7 @@ with open(conn, "w") as f:
     json.dump({**{p: free_port() for p in ("shell_port", "iopub_port", "stdin_port", "control_port", "hb_port")},
                "ip": "127.0.0.1", "key": "smoke", "transport": "tcp", "signature_scheme": "hmac-sha256"}, f)
 kernel = subprocess.Popen([BIN, "--kernel", "--connection_file", conn, "--log", os.path.join(session, "ark.log")],
-                          cwd=project)
+                          cwd=project, env=isolated_env())
 time.sleep(8)  # well past startup, like the extension's console
 t = Term(["--connection-file", conn])
 ok = t.expect("Ctrl-D quits", "profile stdout", "profile message", READY, TOP, timeout=60)
@@ -466,10 +531,8 @@ with socket.socket() as server:
     server.bind(("127.0.0.1", 0))
     server.listen(1)
     server.settimeout(60)
-    # BETTER_SHIFT_ENTER: the host maps Shift-Enter itself (as the extension
-    # does where VS Code's terminal can't report it).
-    t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])],
-             env={"BETTER_IDE_TOKEN": token, "BETTER_SHIFT_ENTER": "1"})
+    # Hosted, the extension binds the newline key itself and sends ESC CR.
+    t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])], env={"BETTER_IDE_TOKEN": token})
     try:
         ide, _ = server.accept()
         ide_lines = ide.makefile("r", encoding="utf-8")
@@ -488,6 +551,7 @@ with socket.socket() as server:
         ide.sendall((json.dumps({"type": "execute", "code": 'cat("from the IDE\\n")'}) + "\n").encode())
         ok = ok and t.expect(r"from the IDE\r?\n", READY, TOP)
     check("hosted console runs code the IDE sends", ok, ANSI.sub("", t.raw)[-300:])
+    check("hosted: ESC CR inserts a newline", newline_case(t, ALT_ENTER) == "newline")
     if ide and not WINDOWS:
         # Code that prints nothing: its echo is the only line printed, and the
         # next prompt must start below it rather than be drawn over it (#4).
@@ -505,6 +569,32 @@ with socket.socket() as server:
     t.quit()
     if ide:
         ide.close()
+
+# Hosted, editing.newline comes only from --set (the IDE's own settings): a
+# value in config.toml is ignored, or the banner would name a key the IDE
+# doesn't send the newline for.
+newline_env = isolated_env({"BETTER_IDE_TOKEN": token})
+os.makedirs(os.path.dirname(newline_env["BETTER_CONFIG"]))
+with open(newline_env["BETTER_CONFIG"], "w") as f:
+    f.write('[editing]\nnewline = "alt_enter"\n')
+for flags, banner in (({}, "Shift-Enter"), ({"editing.newline": "alt_enter"}, "Alt-Enter")):
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(60)
+        t = Term(["--connection-file", conn, "--ide", str(server.getsockname()[1])], env=newline_env,
+                 settings={**SETTINGS, **flags})
+        try:
+            ide, _ = server.accept()
+        except OSError:
+            ide = None
+        ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+        out = ANSI.sub("", t.raw)
+        how = "with --set editing.newline=alt_enter" if flags else 'with newline = "alt_enter" only in the file'
+        check(f"hosted {how}: banner names {banner}", ok and f"{banner} newline" in out, out)
+        t.quit()
+        if ide:
+            ide.close()
 
 # An IDE that speaks another protocol answers the hello with `incompatible`
 # and closes the channel: the console shows why and keeps working on its own.
@@ -529,6 +619,171 @@ with socket.socket() as server:
 kernel.kill()
 kernel.wait()
 
+# Settings (#6).
+TEMPLATE_LINES = ("[completion]", "# min_chars = 3", "# delay_ms = 0", "# accept = \"tab\"", "# size = 10000")
+
+
+def piped(code, args=(), env=None):
+    """Runs `code` through the console's piped mode: a full start, then exit."""
+    return subprocess.run([BIN, *args], input=code, capture_output=True, text=True, timeout=120,
+                          env=env or isolated_env(), encoding="utf-8", errors="replace")
+
+
+# First start: the template is written at the default location, under
+# XDG_CONFIG_HOME (no BETTER_CONFIG); a second start leaves an edited file alone.
+env = isolated_env()
+del env["BETTER_CONFIG"]
+config = os.path.join(env["XDG_CONFIG_HOME"], "better", "config.toml")
+r = piped("1 + 1", env=env)
+written = open(config).read() if os.path.exists(config) else ""
+check("first start writes the config template", r.returncode == 0 and all(l in written for l in TEMPLATE_LINES),
+      (r.returncode, r.stderr[-300:], written))
+with open(config, "w") as f:
+    f.write("[completion]\nmin_chars = 3\n")
+r = piped("1 + 1", env=env)
+check("a second start leaves an edited config alone", open(config).read() == "[completion]\nmin_chars = 3\n",
+      open(config).read())
+
+r = subprocess.run([BIN, "--reset-config", "--yes"], capture_output=True, text=True, env=env, timeout=30)
+backup = config + ".bak"
+check("--reset-config --yes writes the template and keeps a .bak",
+      r.returncode == 0 and all(l in open(config).read() for l in TEMPLATE_LINES)
+      and open(backup).read() == "[completion]\nmin_chars = 3\n" and backup in r.stdout,
+      (r.returncode, r.stdout, r.stderr))
+
+# startup.r_home reaches the kernel the console starts (it can't start R there).
+r = piped("1 + 1", ["--set", "startup.r_home=/nonexistent/R"])
+check("startup.r_home is used for the kernel", r.returncode == 1 and "/nonexistent/R" in r.stderr, r.stderr[-400:])
+
+r = subprocess.run([BIN, "--print-config", "--set", "completion.popup=tab"], capture_output=True, text=True,
+                   env=isolated_env({"BETTER_SHIFT_ENTER": "1"}), timeout=30)
+check("deprecated BETTER_SHIFT_ENTER still works, with a warning",
+      re.search(r'editing\.newline = "shift_enter" +# env BETTER_SHIFT_ENTER', r.stdout) is not None
+      and "BETTER_SHIFT_ENTER is deprecated: use the setting `editing.newline`" in r.stderr,
+      (r.stdout, r.stderr))
+check("--print-config shows where each value came from",
+      re.search(r'completion\.popup = "tab" +# flag --set', r.stdout) is not None
+      and re.search(r"history\.size = 10000 +# default", r.stdout) is not None, r.stdout)
+
+# A config file with several settings, and some mistakes.
+env = isolated_env()
+os.makedirs(os.path.dirname(env["BETTER_CONFIG"]))
+with open(env["BETTER_CONFIG"], "w") as f:
+    f.write('[startup]\nbanner = false\ninline_plots = "iterm"\n\n[completion]\nmin_chars = 3\naccept = "enter"\n'
+            'colour = "red"\ndelay_ms = 5000\nmax_suggestions = 2\n\n[history]\nsuggestions = false\n')
+t = Term(env=env, settings={})
+ok = t.expect(READY, TOP, timeout=60)
+out = ANSI.sub("", t.raw)
+check("bad config entries print a warning and the console still starts",
+      ok and "unknown setting `completion.colour`" in out and "`completion.delay_ms` must be a whole number from 0 to 2000"
+      in out and env["BETTER_CONFIG"] in out, out)
+check("startup.banner = false hides the banner", ok and "Ctrl-D quits" not in out and "ark " not in out, out)
+
+t.run("print_me_please <- function(a, b = 2) a + b")
+t.raw = ""
+t.send("pr")
+t.idle(1)
+check("min_chars = 3: no menu after 2 characters", MENU not in t.raw, ANSI.sub("", t.raw))
+t.raw = ""
+t.send("i")
+t.idle(1.5)
+check("min_chars = 3: a menu after 3", MENU in t.raw and "print" in ANSI.sub("", t.raw), ANSI.sub("", t.raw))
+t.clear_line()
+# Not ending in a name: with accept = "enter", Enter would take a suggestion.
+t.run("df <- mtcars[1:3, ]")
+t.raw = ""
+t.send("df$")
+t.idle(1.5)
+check("min_chars = 3: a menu right after df$", MENU in t.raw and "mpg" in ANSI.sub("", t.raw), ANSI.sub("", t.raw))
+t.clear_line()
+t.raw = ""
+t.send("print.")
+t.idle(2)
+rows = menu_rows(t.raw)
+ROW_COUNTS["max_suggestions = 2"] = len(rows)
+check("max_suggestions = 2 shows 2 suggestion rows", len(rows) == 2, rows)
+t.clear_line()
+
+t.raw = ""
+t.send("print_me")
+t.idle(1.5)
+t.send("\r")
+t.idle(1)
+ok, out = t.run("1)")
+check('completion.accept = "enter" takes a suggestion with Enter', ok and "[1] 3" in out, out)
+
+t.run('cat("hist_marker_text\\n")')
+t.raw = ""
+t.send('cat("hist_m')
+t.idle(1)
+check("history.suggestions = false shows no grey suggestion", "arker_text" not in ANSI.sub("", t.raw),
+      ANSI.sub("", t.raw))
+t.clear_line()
+t.quit()
+
+# completion.delay_ms, from the command line. A long delay here, so a slow CI
+# machine taking a few hundred ms to echo a key doesn't count as a pause.
+t = Term(settings={"completion.delay_ms": "1000"})
+t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+t.run("print_me_please <- function(a, b = 2) a + b")
+t.raw = ""
+for ch in "print_m":
+    t.send(ch)
+    t.idle(0.06)
+typing = t.raw
+t.idle(3)
+check("delay_ms = 1000: no menu while typing quickly", MENU not in typing, ANSI.sub("", typing))
+check("delay_ms = 1000: a menu after the pause", MENU in t.raw and "print_me_please" in ANSI.sub("", t.raw),
+      ANSI.sub("", t.raw))
+t.clear_line()
+t.quit()
+
+# Keys typed around the moment a 300 ms timer fires.
+t = Term(settings={"completion.delay_ms": "300"})
+t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+for i, ch in enumerate("zz_slow_name <- 7"):
+    t.send(ch)
+    t.idle(0.3 + (-0.03, -0.01, 0.0, 0.01, 0.03)[i % 5])
+t.send("\x1b")
+t.idle(0.3)
+ok, out = t.run("")
+ok, out = t.run("zz_slow_name")
+check("delay_ms = 300: no key lost", ok and "[1] 7" in out, out)
+t.quit()
+
+# editing.newline: only the chosen key inserts a newline; the others run the
+# line. Without the kitty protocol, Shift-Enter arrives as Enter, so only
+# Alt-Enter (ESC CR, also Option-Enter's bytes) can be sent; with it, both.
+if not WINDOWS:
+    OPTION = "Option-Enter" if sys.platform == "darwin" else "Alt-Enter"
+    cases = [
+        # (setting, kitty, banner key, {key sequence name: expected})
+        ("shift_enter", False, "Shift-Enter", {"Alt-Enter": "runs"}),
+        ("alt_enter", False, "Alt-Enter", {"Alt-Enter": "newline"}),
+        ("opt_enter", False, OPTION, {"Alt-Enter": "newline"}),
+        ("shift_enter", True, "Shift-Enter", {"Shift-Enter": "newline", "Alt-Enter": "runs"}),
+        ("alt_enter", True, "Alt-Enter", {"Alt-Enter": "newline", "Shift-Enter": "runs"}),
+        ("opt_enter", True, OPTION, {"Alt-Enter": "newline", "Shift-Enter": "runs"}),
+    ]
+    keys = {False: {"Alt-Enter": ALT_ENTER}, True: {"Alt-Enter": KITTY_ALT, "Shift-Enter": SHIFT_ENTER}}
+    for value, kitty, banner, expected in cases:
+        where = "kitty protocol" if kitty else "no kitty protocol"
+        t = Term(settings={**SETTINGS, "editing.newline": value}, kitty=kitty)
+        ok = t.expect("Ctrl-D quits", READY, TOP, timeout=60)
+        out = ANSI.sub("", t.raw)
+        check(f"newline = {value} ({where}): banner names {banner}", ok and f"{banner} newline" in out, out)
+        warned = "can't tell" in out or "sends Shift-Enter as Enter" in out
+        check(f"newline = {value} ({where}): warns only if Shift-Enter can't be told apart",
+              warned == (value == "shift_enter" and not kitty), out)
+        for name, want in expected.items():
+            got = newline_case(t, keys[kitty][name])
+            check(f"newline = {value} ({where}): {name} {'inserts a newline' if want == 'newline' else 'runs the line'}",
+                  got == want, got)
+        ok, out = t.run("33 + 1")
+        check(f"newline = {value} ({where}): Enter runs the line", ok and "[1] 34" in out, out)
+        t.quit()
+
+print("observed suggestion rows:", ROW_COUNTS)
 print()
 failed = [k for k, v in results.items() if not v]
 print(f"{len(results) - len(failed)}/{len(results)} passed")

@@ -158,18 +158,30 @@ pub fn close_brackets(text: &str) -> String {
 
 /// Emacs editing, plus: completion opens by itself as you type a name, or
 /// right after `$`, `@` and `::` (the completer decides whether there is
-/// anything worth showing). Tab presses are noted for the completer, which
-/// offers suggestions for shorter prefixes when asked explicitly.
+/// anything worth showing, and when). Tab presses are noted for the completer,
+/// which offers suggestions for shorter prefixes when asked explicitly.
 pub struct AutoCompleteMode<M: EditMode> {
     inner: M,
     tab_pressed: Arc<AtomicBool>,
     /// In Ctrl-R history search, which ignores `Multiple` events.
     searching: bool,
+    /// `completion.popup = "typing"`; otherwise only Tab opens the menu.
+    as_you_type: bool,
 }
 
 impl<M: EditMode> AutoCompleteMode<M> {
-    pub fn new(inner: M, tab_pressed: Arc<AtomicBool>) -> Self {
-        Self { inner, tab_pressed, searching: false }
+    pub fn new(inner: M, tab_pressed: Arc<AtomicBool>, as_you_type: bool) -> Self {
+        Self { inner, tab_pressed, searching: false, as_you_type }
+    }
+}
+
+/// Whether a key's event ends with Enter: `Multiple([Esc, Enter])`, or that
+/// as the fallback of `UntilFound` (with `completion.accept = "enter"`).
+fn runs_line(event: &ReedlineEvent) -> bool {
+    match event {
+        ReedlineEvent::Multiple(events) => events.contains(&ReedlineEvent::Enter),
+        ReedlineEvent::UntilFound(events) => events.iter().any(runs_line),
+        _ => false,
     }
 }
 
@@ -186,10 +198,7 @@ impl<M: EditMode> EditMode for AutoCompleteMode<M> {
         if self.searching {
             // Typed letters must reach the search term unwrapped, and Enter
             // (bound as Esc + Enter, to close a menu first) must take the match.
-            let parsed = match parsed {
-                ReedlineEvent::Multiple(events) if events.contains(&ReedlineEvent::Enter) => ReedlineEvent::Enter,
-                other => other,
-            };
+            let parsed = if runs_line(&parsed) { ReedlineEvent::Enter } else { parsed };
             self.searching = !matches!(
                 parsed,
                 ReedlineEvent::Enter
@@ -206,7 +215,8 @@ impl<M: EditMode> EditMode for AutoCompleteMode<M> {
         self.searching = parsed == ReedlineEvent::SearchHistory;
         match &parsed {
             ReedlineEvent::Edit(commands)
-                if matches!(commands.as_slice(), [EditCommand::InsertChar(c)] if is_ident(*c) || matches!(c, '$' | '@' | ':')) =>
+                if self.as_you_type
+                    && matches!(commands.as_slice(), [EditCommand::InsertChar(c)] if is_ident(*c) || matches!(c, '$' | '@' | ':')) =>
             {
                 ReedlineEvent::Multiple(vec![parsed, ReedlineEvent::Menu(COMPLETION_MENU.into())])
             },

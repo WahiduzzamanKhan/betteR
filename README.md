@@ -18,9 +18,9 @@ cyl   carb
 ## Features
 
 - **Syntax highlighting** while you type.
-- **Completion as you type, from your live session**: a pop-up appears once a name has three letters, or straight after `$`, `@` or `::`, with data frame columns, functions you've defined, packages and arguments, each with its package (`{base}`) in a second column. Beside the highlighted suggestion is its help, laid out with line breaks and colour: a function's usage, title, description and arguments from its help page, or its signature if it has none. Press Tab to take a suggestion, or for file paths in strings.
+- **Completion as you type, from your live session**: a pop-up appears as you type a name, or straight after `$`, `@` or `::`, with data frame columns, functions you've defined, packages and arguments, each with its package (`{base}`) in a second column. Beside the highlighted suggestion is its help, laid out with line breaks and colour: a function's usage, title, description and arguments from its help page, or its signature if it has none. Press Tab to take a suggestion, or for file paths in strings. When and how it pops up, and which key takes a suggestion, are [settings](#settings).
 - **Function signatures** under the line while you type a call, with the current argument in bold: `mean(x, trim = 0, `**`na.rm = FALSE`**`, ...)`.
-- **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Shift-Enter inserts a newline. Terminals that send Shift-Enter the same as Enter (they don't support the kitty keyboard protocol), such as macOS Terminal and GNOME Terminal, need Alt-Enter instead; the startup banner says which to use.
+- **Multi-line editing.** Enter only runs code once R considers it complete (an open `{` continues on the next line). Shift-Enter inserts a newline. Terminals that send Shift-Enter the same as Enter (they don't support the kitty keyboard protocol), such as macOS Terminal and GNOME Terminal, use Alt-Enter (Option-Enter on a Mac) instead; the startup banner says which, and [`editing.newline`](#settings) picks another.
 - **History** with fish-style suggestions as you type, Ctrl-R reverse search and bracketed paste.
 - **`browser()` and `debug()`** with a `Browse[1]>` prompt. Enter steps, as in R.
 - **`readline()` and `menu()`** prompts.
@@ -173,12 +173,14 @@ It starts a new R session in the current directory. Quit with **Ctrl-D** or `q()
 | **↑** / **↓** (suggestions showing) | Move through the suggestions |
 | **Esc** | Close the suggestions |
 | **Enter** | Run the input as typed (even with suggestions showing), or start a new line if it isn't complete yet |
-| **Shift-Enter** | Insert a newline without running. Use **Alt-Enter** in terminals where Shift-Enter runs the line (they send it the same as Enter); the startup banner names the key that works |
+| **Shift-Enter** | Insert a newline without running. In terminals that send Shift-Enter the same as Enter, it's **Alt-Enter** (**Option-Enter** on a Mac) instead. The startup banner names the key, and [`editing.newline`](#settings) changes it; the other keys run the line like Enter |
 | **→** (at end of line) | Accept the grey suggestion from history |
 | **↑** / **↓** | Previous / next history entry |
 | **Ctrl-R** | Search history |
 | **Ctrl-C** | Interrupt running code, or clear the current line |
 | **Ctrl-D** | Quit (on an empty line) |
+
+With [`completion.accept = "enter"`](#settings), Enter takes the highlighted suggestion while suggestions are showing, and Tab moves to the next one.
 
 ### Things to try
 
@@ -198,8 +200,47 @@ plot(1:10)               # drawn inline in iTerm2, WezTerm, kitty or Windows Ter
 
 ### Plots, help and interactive output
 
-- **Plots** are drawn inline in terminals with an image protocol: iTerm2, WezTerm, kitty, and Windows Terminal 1.22 or later (as Sixel). Elsewhere, `better` prints a short note instead. To force a protocol, set `BETTER_INLINE_IMAGES=iterm`, `kitty` or `sixel` (for other Sixel terminals, such as foot or xterm), or `none` to turn images off; use `none` if an older Windows Terminal prints garbage instead of plots. VS Code's integrated terminal can show them with `BETTER_INLINE_IMAGES=iterm` and the setting `terminal.integrated.enableImages` turned on.
+- **Plots** are drawn inline in terminals with an image protocol: iTerm2, WezTerm, kitty, and Windows Terminal 1.22 or later (as Sixel). Elsewhere, `better` prints a short note instead. To choose the protocol yourself, or turn images off, use the setting [`startup.inline_plots`](#settings). VS Code's integrated terminal can show them with `startup.inline_plots = "iterm"` and the setting `terminal.integrated.enableImages` turned on.
 - **Help pages** (`?mean`, `help("lm")`, `??regression`), **htmlwidgets** (plotly, leaflet, DT, …) and **Shiny apps** open in your default browser, or in the program named by `$BROWSER`.
+
+### Settings
+
+`better` reads its settings from `config.toml`:
+
+- macOS and Linux: `~/.config/better/config.toml` (or `$XDG_CONFIG_HOME/better/config.toml`);
+- Windows: `%APPDATA%\better\config.toml`;
+- or the file given with `--config <path>` or the `BETTER_CONFIG` environment variable.
+
+`better` writes this file, with every setting commented out, the first time it starts and finds none. It never changes an existing file, so new settings in later releases are listed here and in `better --print-config`, not added to your file. Uncomment a line to change a setting:
+
+```toml
+[completion]
+min_chars = 2
+accept = "enter"
+```
+
+Settings are read when the console starts, so restart it after a change. A setting with a mistake in it (an unknown name, the wrong type, a value out of range) is reported in one dim line at startup, naming the setting and the file, and keeps its default; the console still starts.
+
+| Setting | Values | Default | What it does |
+|---|---|---|---|
+| `startup.r_home` | path | `""` | The R installation to use. Empty: `$R_HOME`, else `R RHOME` (the `R` on your `PATH`). |
+| `startup.ark` | path | `""` | A separate ark binary (like `--ark`). Empty: the built-in kernel. Not used in VS Code, where the extension's `betteR.arkPath` decides. |
+| `startup.banner` | `true`, `false` | `true` | The R version, ark and key-hint lines at startup. |
+| `startup.inline_plots` | `"auto"`, `"iterm"`, `"kitty"`, `"sixel"`, `"none"` | `"auto"` | How plots are drawn in the terminal. `auto` detects the terminal; `iterm` also works for VS Code's terminal with `terminal.integrated.enableImages` on, `sixel` for other Sixel terminals (foot, xterm), and `none` turns images off (use it if an older Windows Terminal prints garbage instead of plots). |
+| `completion.lsp` | `true`, `false` | `true` | Completion from ark's language server (like `--no-lsp` when `false`). |
+| `completion.popup` | `"typing"`, `"tab"` | `"typing"` | Show suggestions as you type, or only when Tab is pressed. |
+| `completion.min_chars` | 0–10 | `3` | With `popup = "typing"`: how many characters of a name must be typed before suggestions show. Right after `$`, `@` or `::` they always show. |
+| `completion.delay_ms` | 0–2000 | `0` | With `popup = "typing"`: how long typing must pause, in milliseconds, before suggestions show. Each key restarts the wait; once the suggestions show, they follow your typing at once. Tab doesn't wait. |
+| `completion.accept` | `"tab"`, `"enter"` | `"tab"` | The key that takes the highlighted suggestion. With `enter`, Enter takes it while suggestions are showing and runs the line when they aren't; Tab opens the suggestions and moves to the next one. |
+| `completion.max_suggestions` | 1–50 | `5` | The most suggestions shown at once (the border isn't counted). With more matches, the list scrolls. |
+| `editing.newline` | `"auto"`, `"shift_enter"`, `"alt_enter"`, `"opt_enter"` | `"auto"` | The one key that inserts a newline; the others run the line, like Enter. `auto`: Shift-Enter where the terminal can tell it from Enter (the kitty keyboard protocol, Windows, VS Code), else Alt-Enter (Option-Enter on a Mac, which needs "Option as Meta" as below). `opt_enter`: Option-Enter on a Mac, which a terminal sends as Alt-Enter only with "Use Option as Meta key" turned on (Terminal: Settings → Profiles → Keyboard; iTerm2: Profiles → Keys, Left Option key "Esc+"); VS Code needs nothing. On Windows and Linux it's the same as `alt_enter`. `shift_enter` in a terminal that sends Shift-Enter as Enter prints a warning at startup, since Shift-Enter then runs the line. The banner names the key. In VS Code only the extension's `betteR.console.editing.newline` counts: the extension decides which key sends the newline, so a value in `config.toml` is ignored there. |
+| `history.size` | 0 or more | `10000` | Lines kept in the history file. `0` keeps no history (and leaves the file as it is). |
+| `history.suggestions` | `true`, `false` | `true` | Fish-style suggestions: the rest of a matching history line in grey after the cursor; → takes it. |
+
+**Precedence**, lowest to highest: the defaults, `config.toml`, environment variables (`R_HOME` sets `startup.r_home`), then command-line flags: `--set key=value` (repeatable, for example `better --set completion.accept=enter`), `--no-lsp` and `--ark`. In VS Code, the extension's `betteR.console.*` settings are passed as `--set` flags, and only the ones you've set, so `config.toml` serves both the terminal and VS Code.
+
+- `better --print-config` shows the settings in use and where each value came from (`default`, `file`, `env` or `flag`).
+- `better --reset-config` replaces the file with the commented-out template, so every setting goes back to its default. It saves the old file as `config.toml.bak` first (replacing an earlier backup) and asks before it does anything, unless you add `--yes`.
 
 ### Command-line options
 
@@ -209,6 +250,10 @@ better [OPTIONS]
   -f, --connection-file <PATH>  Attach to a running R session instead of starting one
       --log <PATH>              Keep the R session's log at this path
       --no-lsp                  Turn off completion
+      --set <KEY=VALUE>         Change a setting for this run, e.g. --set completion.accept=enter (repeatable)
+      --config <PATH>           Read settings from this file instead
+      --print-config            Show the settings in use and where each comes from
+      --reset-config            Reset the config file to the defaults (keeps a .bak; --yes: don't ask)
       --ark <PATH>              Use a separate ark build instead of the built-in one
   -h, --help                    Show help
   -V, --version                 Show the version
@@ -229,19 +274,25 @@ better < analysis.R
 
 | Variable | Effect |
 |---|---|
-| `BETTER_INLINE_IMAGES` | `iterm`, `kitty`, `sixel` or `none`: overrides inline-image detection |
 | `BETTER_HISTORY` | History file (default: `~/Library/Application Support/better/history.txt` on macOS, `~/.local/share/better/history.txt` on Linux, `%APPDATA%\better\history.txt` on Windows) |
 | `BROWSER` | Program used to open help pages, htmlwidgets and apps |
 | `BETTER_STANDARD_DLL_SEARCH` | Windows only: `1` loads R's libraries with the standard DLL search order (which includes `PATH`), as conda's R needs |
-| `R_HOME` | Which R installation to use (default: the `R` on your `PATH`) |
+| `R_HOME` | Which R installation to use (default: the `R` on your `PATH`). Overrides `startup.r_home` in `config.toml` |
+| `BETTER_CONFIG` | The config file to read (see [Settings](#settings)) |
 | `BETTER_IDE_TOKEN` | Internal: the token `--ide` proves itself with, set by the VS Code extension |
-| `BETTER_SHIFT_ENTER` | Internal: `1` when the host terminal maps Shift-Enter to a newline itself, so the banner offers Shift-Enter; set by the VS Code extension where VS Code's terminal can't report Shift-Enter |
+
+**Deprecated.** These still work, at the level of environment variables, but print a line at startup naming the setting that replaces them. A later release removes them; the changelog will say when.
+
+| Variable | Use instead |
+|---|---|
+| `BETTER_INLINE_IMAGES` (`iterm`, `kitty`, `sixel`, `none`) | `startup.inline_plots` |
+| `BETTER_SHIFT_ENTER` (`1`, `0`) | `editing.newline` (`1` is `"shift_enter"`, `0` is `"alt_enter"`) |
 
 ## Troubleshooting
 
 - **"R session ended abnormally"** or **"kernel exited during startup"**: R crashed, or couldn't start. The message gives the reason from the session log when the log has one (for example `Unsupported R version 4.1.2. Ark requires R >= 4.2.0`), and the path of the log, which is kept for diagnosis.
-- **Plots show as a note instead of an image**: your terminal doesn't support inline images. Use one that does, or set `BETTER_INLINE_IMAGES`.
-- **"Can't find R"**: make sure `R` runs from the same shell. betteR uses `$R_HOME` if set, otherwise the `R` on your `PATH`. Set `R_HOME` to choose a specific R installation. On Windows, R isn't on `PATH` or in `R_HOME` after installing it; see [Windows](#windows).
+- **Plots show as a note instead of an image**: your terminal doesn't support inline images. Use one that does, or set `startup.inline_plots`.
+- **"Can't find R"**: make sure `R` runs from the same shell. betteR uses `$R_HOME` if set, otherwise the `R` on your `PATH`. Set `R_HOME`, or the setting `startup.r_home`, to choose a specific R installation. On Windows, R isn't on `PATH` or in `R_HOME` after installing it; see [Windows](#windows).
 
 ## Limitations
 

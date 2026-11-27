@@ -19,6 +19,7 @@ reedline = "0.53.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+toml = "1.2.1"
 tree-sitter = "0.24.7"
 # tree-sitter and zmq link native libraries, so they must be the exact versions ark uses.
 tree-sitter-r = { git = "https://github.com/r-lib/tree-sitter-r", rev = "d459b97a9a11dd81643ab674938bede2874663b0" }

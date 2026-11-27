@@ -13,6 +13,7 @@ use anyhow::{anyhow, Result};
 use base64::Engine;
 use serde_json::{json, Value};
 
+use crate::config::InlinePlots;
 use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
 
@@ -405,16 +406,16 @@ pub enum ImageProtocol {
     Sixel,
 }
 
-/// `BETTER_INLINE_IMAGES=iterm|kitty|sixel|none` overrides detection.
-pub fn detect_image_protocol() -> Option<ImageProtocol> {
-    let var = |k: &str| std::env::var(k).unwrap_or_default();
-    match var("BETTER_INLINE_IMAGES").as_str() {
-        "iterm" => return Some(ImageProtocol::Iterm),
-        "kitty" => return Some(ImageProtocol::Kitty),
-        "sixel" => return Some(ImageProtocol::Sixel),
-        "none" => return None,
-        _ => {},
+/// `startup.inline_plots` other than `auto` overrides detection.
+pub fn detect_image_protocol(setting: InlinePlots) -> Option<ImageProtocol> {
+    match setting {
+        InlinePlots::Iterm => return Some(ImageProtocol::Iterm),
+        InlinePlots::Kitty => return Some(ImageProtocol::Kitty),
+        InlinePlots::Sixel => return Some(ImageProtocol::Sixel),
+        InlinePlots::None => return None,
+        InlinePlots::Auto => {},
     }
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
     if var("TERM") == "xterm-kitty" || !var("KITTY_WINDOW_ID").is_empty() {
         return Some(ImageProtocol::Kitty);
     }

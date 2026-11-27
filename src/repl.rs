@@ -18,11 +18,12 @@ use reedline::{
 use serde_json::{json, Value};
 
 use crate::assist::{AutoCompleteMode, CompletionMenu, Docs, SignatureLine, COMPLETION_MENU};
+use crate::config::{Accept, Config, Newline, Popup};
 use crate::highlight::RHighlighter;
 use crate::ide::Ide;
 use crate::jupyter::{Channel, KernelClient, Message};
 use crate::kernel::SpawnedKernel;
-use crate::lsp::{CompletionBackend, LspClient, LspCompleter};
+use crate::lsp::{CompletionBackend, LspClient, LspCompleter, Trigger};
 use crate::plots::{
     detect_image_protocol, inline_image, ImageProtocol, PlotEvent, PlotRelay, HELP_COMM_TARGET, VARIABLES_COMM_TARGET,
 };
@@ -165,6 +166,7 @@ pub struct Repl {
     /// at`, ...), held until the prompt shows whether R really stopped in
     /// the browser, and since when.
     held_debug: Option<(String, Instant)>,
+    settings: Config,
 }
 
 /// How R introduces the lines it prints when the browser stops (`debugging
@@ -268,7 +270,7 @@ impl Repl {
     pub fn start(
         client: KernelClient,
         origin: Origin,
-        use_lsp: bool,
+        settings: Config,
         interrupted: Arc<AtomicBool>,
         ide: Option<(u16, String)>,
     ) -> Result<Self> {
@@ -297,8 +299,9 @@ impl Repl {
             echo_highlighter: RHighlighter::new(),
             running_typed_input: false,
             plots: Arc::new(PlotRelay::new(None)),
-            image_protocol: detect_image_protocol(),
+            image_protocol: detect_image_protocol(settings.inline_plots()),
             held_debug: None,
+            settings,
         };
         let info = repl.wait_ready(Duration::from_secs(60))?;
         repl.open_ui_comm()?;
@@ -325,10 +328,12 @@ impl Repl {
             repl.plots.set_variables_comm(&variables);
         }
 
-        let backend = if let Some(ide) = &repl.ide {
+        let backend = if !repl.settings.lsp() {
+            CompletionBackend::None
+        } else if let Some(ide) = &repl.ide {
             // Hosted: the IDE owns the kernel's one LSP connection.
             CompletionBackend::Ide(ide.clone())
-        } else if use_lsp && interactive {
+        } else if interactive {
             match repl.open_lsp() {
                 Ok(lsp) => CompletionBackend::Lsp(Arc::new(Mutex::new(lsp))),
                 Err(err) => {
@@ -348,11 +353,23 @@ impl Repl {
                 Origin::Attached(_) => "attached to running session",
             };
             let kitty = reedline::kitty_protocol_available();
-            let newline = if shift_enter_distinct(kitty) { "Shift-Enter" } else { "Alt-Enter" };
-            let dim = Color::DarkGray.normal();
-            println!("{}", Color::Blue.bold().paint(r_version.trim()));
-            println!("{}", dim.paint(format!("ark {ark} · {how}")));
-            println!("{}", dim.paint(format!("Tab completes · {newline} newline · Ctrl-C interrupts · Ctrl-D quits")));
+            let hosted = repl.ide.is_some();
+            let (key, newline) = newline_key(repl.settings.newline(), kitty, hosted);
+            if key == NewlineKey::Shift && !shift_enter_distinct(kitty, hosted) {
+                let warning = "better: editing.newline = \"shift_enter\", but this terminal sends Shift-Enter as \
+                               Enter, so it runs the line (the kitty keyboard protocol would tell them apart)";
+                eprintln!("{}", Color::DarkGray.paint(warning));
+            }
+            if repl.settings.banner() {
+                let complete = match repl.settings.accept() {
+                    Accept::Tab => "Tab completes",
+                    Accept::Enter => "Enter completes",
+                };
+                let dim = Color::DarkGray.normal();
+                println!("{}", Color::Blue.bold().paint(r_version.trim()));
+                println!("{}", dim.paint(format!("ark {ark} · {how}")));
+                println!("{}", dim.paint(format!("{complete} · {newline} newline · Ctrl-C interrupts · Ctrl-D quits")));
+            }
             repl.replay_startup_output();
             repl.editor = Some(repl.build_editor(backend.clone(), kitty)?);
             (repl.completion, repl.kitty) = (backend, kitty);
@@ -377,27 +394,51 @@ impl Repl {
     }
 
     /// `kitty`: whether the terminal supports the kitty keyboard protocol
-    /// (asked once at startup, see `kitty_protocol_available`).
+    /// (asked once at startup, see `kitty_protocol_available`). Also builds
+    /// the fresh editor of `new_prompt_after_output`, so it takes everything
+    /// else from `self`.
     fn build_editor(&self, backend: CompletionBackend, kitty: bool) -> Result<Reedline> {
+        let settings = &self.settings;
         let mut keybindings = default_emacs_keybindings();
-        // Completion pops up as you type; Tab takes the highlighted suggestion
-        // (or asks for suggestions when none are showing), Enter always runs.
-        keybindings.add_binding(
-            KeyModifiers::NONE,
-            KeyCode::Tab,
-            ReedlineEvent::UntilFound(vec![ReedlineEvent::MenuAccept, ReedlineEvent::Menu(COMPLETION_MENU.into())]),
-        );
+        // Esc first, so that Enter runs the line rather than taking a suggestion.
+        let run = ReedlineEvent::Multiple(vec![ReedlineEvent::Esc, ReedlineEvent::Enter]);
+        let enter = match settings.accept() {
+            // Tab takes the highlighted suggestion (or asks for suggestions
+            // when none are showing); Enter always runs.
+            Accept::Tab => {
+                keybindings.add_binding(
+                    KeyModifiers::NONE,
+                    KeyCode::Tab,
+                    ReedlineEvent::UntilFound(vec![ReedlineEvent::MenuAccept, ReedlineEvent::Menu(COMPLETION_MENU.into())]),
+                );
+                run
+            },
+            // Enter takes the highlighted suggestion while there are any, and
+            // runs the line otherwise; Tab opens the menu, then moves through it.
+            Accept::Enter => {
+                keybindings.add_binding(
+                    KeyModifiers::NONE,
+                    KeyCode::Tab,
+                    ReedlineEvent::UntilFound(vec![ReedlineEvent::Menu(COMPLETION_MENU.into()), ReedlineEvent::MenuNext]),
+                );
+                ReedlineEvent::UntilFound(vec![ReedlineEvent::MenuAccept, run])
+            },
+        };
         keybindings.add_binding(KeyModifiers::SHIFT, KeyCode::BackTab, ReedlineEvent::MenuPrevious);
-        keybindings.add_binding(
-            KeyModifiers::NONE,
-            KeyCode::Enter,
-            ReedlineEvent::Multiple(vec![ReedlineEvent::Esc, ReedlineEvent::Enter]),
-        );
-        keybindings.add_binding(
-            KeyModifiers::ALT,
-            KeyCode::Enter,
-            ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
-        );
+        // Only the `editing.newline` key inserts a newline; Shift-Enter and
+        // Alt-Enter otherwise act as Enter. Hosted, the IDE binds the chosen
+        // key itself and sends Alt-Enter's ESC CR for it.
+        let hosted = self.ide.is_some();
+        let (key, _) = newline_key(settings.newline(), kitty, hosted);
+        for (modifiers, this) in [(KeyModifiers::SHIFT, NewlineKey::Shift), (KeyModifiers::ALT, NewlineKey::Alt)] {
+            let event = if this == key || (hosted && this == NewlineKey::Alt) {
+                ReedlineEvent::Edit(vec![EditCommand::InsertNewline])
+            } else {
+                enter.clone()
+            };
+            keybindings.add_binding(modifiers, KeyCode::Enter, event);
+        }
+        keybindings.add_binding(KeyModifiers::NONE, KeyCode::Enter, enter);
 
         let tab_pressed = Arc::new(AtomicBool::new(false));
         let menu_openings = Arc::new(AtomicU64::new(0));
@@ -408,14 +449,23 @@ impl Repl {
             // A typed character that can't extend the name (space, `(`, ...) closes it.
             .with_word_chars("._")
             .with_default_border()
-            .with_max_completion_height(10);
+            // The height includes the border's two rows.
+            .with_max_completion_height(settings.max_suggestions() + 2);
+        let trigger = Trigger { min_chars: settings.min_chars(), delay: Duration::from_millis(settings.delay_ms()) };
+        let popup = settings.popup() == Popup::Typing;
 
         let mut editor = Reedline::create()
             .with_highlighter(Box::new(RHighlighter::new()))
             .with_validator(Box::new(KernelValidator {
                 client: self.client.clone(),
             }))
-            .with_completer(Box::new(LspCompleter::new(backend.clone(), docs.clone(), tab_pressed.clone(), menu_openings.clone())))
+            .with_completer(Box::new(LspCompleter::new(
+                backend.clone(),
+                docs.clone(),
+                tab_pressed.clone(),
+                menu_openings.clone(),
+                trigger,
+            )))
             .with_menu(ReedlineMenu::EngineCompleter(Box::new(CompletionMenu::new(
                 menu,
                 menu_openings,
@@ -426,15 +476,25 @@ impl Repl {
             .with_quick_completions(true)
             .with_partial_completions(false)
             .with_status_line(Box::new(SignatureLine::new(backend)))
-            .with_hinter(Box::new(DefaultHinter::default().with_style(Style::new().fg(Color::DarkGray))))
-            .with_edit_mode(Box::new(AutoCompleteMode::new(Emacs::new(keybindings), tab_pressed)))
+            .with_edit_mode(Box::new(AutoCompleteMode::new(Emacs::new(keybindings), tab_pressed, popup)))
             .use_bracketed_paste(true)
             // Lets terminals that support it report Shift-Enter (bound by reedline
             // to a newline, like Alt-Enter) apart from Enter.
             .use_kitty_keyboard_enhancement(kitty)
             .with_break_signal(self.wake.clone());
-        if let Some(path) = history_path() {
-            editor = editor.with_history(Box::new(FileBackedHistory::with_file(10_000, path)?));
+        if settings.history_suggestions() {
+            editor = editor.with_hinter(Box::new(DefaultHinter::default().with_style(Style::new().fg(Color::DarkGray))));
+        }
+        if !trigger.delay.is_zero() {
+            // How often reedline checks the completer's pause timer between keys.
+            editor = editor.with_poll_interval(Duration::from_millis(20));
+        }
+        if settings.history_size() == 0 {
+            // No history, and the file is left alone (a file-backed history
+            // of size 0 would empty it).
+            editor = editor.with_history(Box::new(FileBackedHistory::new(0)?));
+        } else if let Some(path) = history_path() {
+            editor = editor.with_history(Box::new(FileBackedHistory::with_file(settings.history_size(), path)?));
         }
         Ok(editor)
     }
@@ -672,7 +732,7 @@ impl Repl {
             },
             None => {
                 let hint = "[plot: this terminal can't show images; use iTerm2, WezTerm, kitty or \
-                            Windows Terminal, set BETTER_INLINE_IMAGES, or the VS Code extension's plot pane]";
+                            Windows Terminal, set startup.inline_plots, or the VS Code extension's plot pane]";
                 self.write(hint, Some(Color::DarkGray.normal()));
                 self.finish_line();
             },
@@ -1135,14 +1195,32 @@ fn open_with_system(target: &str) -> bool {
     open::that(target).is_ok()
 }
 
-/// Whether Shift-Enter reaches the console apart from Enter (and so inserts a
-/// newline), given whether the terminal supports the kitty keyboard protocol.
-/// Always on Windows, where keys come through the console API. Elsewhere other
-/// terminals (e.g. VTE's: GNOME Terminal, Ptyxis) send it as plain Enter,
-/// unless the host says it maps Shift-Enter itself (`BETTER_SHIFT_ENTER=1`;
-/// the VS Code extension sends Alt-Enter's sequence for it).
-fn shift_enter_distinct(kitty: bool) -> bool {
-    cfg!(windows) || kitty || std::env::var("BETTER_SHIFT_ENTER").is_ok_and(|v| v == "1")
+/// The key that inserts a newline. Option-Enter is Alt-Enter's bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum NewlineKey {
+    Shift,
+    Alt,
+}
+
+/// Whether the console can tell Shift-Enter from Enter, given whether the
+/// terminal supports the kitty keyboard protocol: on Windows, where keys come
+/// through the console API, and with the kitty protocol. Other terminals (e.g.
+/// macOS Terminal, VTE's GNOME Terminal and Ptyxis) send it as plain Enter.
+/// `hosted`: the IDE maps the key itself (VS Code sends ESC CR for it).
+fn shift_enter_distinct(kitty: bool, hosted: bool) -> bool {
+    cfg!(windows) || kitty || hosted
+}
+
+/// The newline key for `editing.newline`, and its name for the banner.
+fn newline_key(setting: Newline, kitty: bool, hosted: bool) -> (NewlineKey, &'static str) {
+    let option = if cfg!(target_os = "macos") { "Option-Enter" } else { "Alt-Enter" };
+    match setting {
+        Newline::Auto if shift_enter_distinct(kitty, hosted) => (NewlineKey::Shift, "Shift-Enter"),
+        Newline::Auto => (NewlineKey::Alt, option),
+        Newline::ShiftEnter => (NewlineKey::Shift, "Shift-Enter"),
+        Newline::AltEnter => (NewlineKey::Alt, "Alt-Enter"),
+        Newline::OptEnter => (NewlineKey::Alt, option),
+    }
 }
 
 fn terminal_width() -> u16 {
