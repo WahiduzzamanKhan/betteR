@@ -13,7 +13,7 @@ use reedline::{CompletionResult, CompletionStatus, Completer, Span, Suggestion};
 use serde_json::{json, Value};
 use unicode_width::UnicodeWidthStr;
 
-use crate::assist::{code_context, SharedDocs};
+use crate::assist::{code_context, Generation, SharedDocs};
 use crate::ide::Ide;
 
 const DOC_URI: &str = "untitled:better-console";
@@ -363,7 +363,8 @@ pub struct Trigger {
 const AUTO_TIMEOUT: Duration = Duration::from_millis(800);
 const EXPLICIT_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The server's answer for one word, narrowed locally as the word grows.
+/// The server's answer for one word, narrowed locally as the word grows, until
+/// code runs.
 struct Cached {
     /// The text before the word and after the cursor: the word's context.
     before: String,
@@ -371,6 +372,8 @@ struct Cached {
     prefix: String,
     items: Vec<Value>,
     utf8: bool,
+    /// The [`Generation`] it was asked in.
+    generation: u64,
 }
 
 pub struct LspCompleter {
@@ -385,6 +388,7 @@ pub struct LspCompleter {
     /// while that menu stays open there, any prefix gets suggestions.
     explicit: Option<(String, u64)>,
     cache: Option<Cached>,
+    generation: Generation,
     trigger: Trigger,
     /// The pause being waited for, and the line and cursor it is for.
     waiting: Option<(Instant, String, usize)>,
@@ -400,6 +404,7 @@ impl LspCompleter {
         docs: SharedDocs,
         tab_pressed: Arc<AtomicBool>,
         menu_openings: Arc<AtomicU64>,
+        generation: Generation,
         trigger: Trigger,
     ) -> Self {
         Self {
@@ -409,6 +414,7 @@ impl LspCompleter {
             menu_openings,
             explicit: None,
             cache: None,
+            generation,
             trigger,
             waiting: None,
             due: None,
@@ -420,7 +426,8 @@ impl LspCompleter {
     /// menu to show its help.
     fn suggestions(&self, line: &str, pos: usize, items: &[Value], utf8: bool) -> Vec<Suggestion> {
         let ranked = ranked_suggestions(line, pos, items, utf8);
-        self.docs.lock().unwrap().items = ranked.iter().map(|(_, item)| (*item).clone()).collect();
+        let items = ranked.iter().map(|(_, item)| (*item).clone()).collect();
+        self.docs.lock().unwrap().set_items(items, self.generation.current());
         ranked.into_iter().map(|(suggestion, _)| suggestion).collect()
     }
 
@@ -488,10 +495,10 @@ impl Completer for LspCompleter {
 impl LspCompleter {
     /// The suggestions for the word before `pos`, from the cache or ark.
     fn lookup(&mut self, line: &str, pos: usize, before: &str, after: &str, prefix: &str, explicit: bool) -> CompletionResult {
-        let reusable = self
-            .cache
-            .as_ref()
-            .is_some_and(|c| c.before == before && c.after == after && prefix.starts_with(c.prefix.as_str()));
+        let generation = self.generation.current();
+        let reusable = self.cache.as_ref().is_some_and(|c| {
+            c.generation == generation && c.before == before && c.after == after && prefix.starts_with(c.prefix.as_str())
+        });
         if !reusable {
             self.cache = None;
             let timeout = if explicit { EXPLICIT_TIMEOUT } else { AUTO_TIMEOUT };
@@ -518,6 +525,7 @@ impl LspCompleter {
                     prefix: prefix.to_string(),
                     items,
                     utf8,
+                    generation,
                 });
             }
             return CompletionResult::fresh(suggestions);
