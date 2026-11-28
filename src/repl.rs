@@ -17,7 +17,7 @@ use reedline::{
 };
 use serde_json::{json, Value};
 
-use crate::assist::{AutoCompleteMode, CompletionMenu, Docs, SignatureLine, COMPLETION_MENU};
+use crate::assist::{AutoCompleteMode, CompletionMenu, Docs, Generation, SignatureLine, COMPLETION_MENU};
 use crate::config::{Accept, Config, Newline, Popup};
 use crate::highlight::RHighlighter;
 use crate::ide::Ide;
@@ -153,6 +153,9 @@ pub struct Repl {
     /// Something was printed over that prompt since, so the editor must draw
     /// a new one (see `new_prompt_after_output`).
     prompt_overwritten: bool,
+    /// Advanced whenever R may have changed what's defined, so the line
+    /// editor asks ark again instead of reusing an earlier answer.
+    generation: Generation,
     /// What the line editor is built with, to build it again.
     completion: CompletionBackend,
     kitty: bool,
@@ -256,6 +259,12 @@ fn split_top_level(code: &str) -> Vec<Chunk> {
     if chunks.is_empty() { whole() } else { chunks }
 }
 
+/// True for the IOPub status that ends a request from any client: R may have
+/// run code or changed the session (a Clear in the IDE's Environment view).
+fn finishes_request(msg: &Message) -> bool {
+    msg.msg_type() == "status" && msg.content["execution_state"] == "idle"
+}
+
 /// True for IOPub traffic that should interrupt line editing: debugger
 /// commands from the IDE, and output produced on behalf of another client.
 fn needs_main_loop(msg: &Message, dap_comm: Option<&str>) -> bool {
@@ -294,6 +303,7 @@ impl Repl {
             queue: VecDeque::new(),
             prompt_on_screen: false,
             prompt_overwritten: false,
+            generation: Generation::default(),
             completion: CompletionBackend::None,
             kitty: false,
             echo_highlighter: RHighlighter::new(),
@@ -464,6 +474,7 @@ impl Repl {
                 docs.clone(),
                 tab_pressed.clone(),
                 menu_openings.clone(),
+                self.generation.clone(),
                 trigger,
             )))
             .with_menu(ReedlineMenu::EngineCompleter(Box::new(CompletionMenu::new(
@@ -475,7 +486,7 @@ impl Repl {
             // Refreshes an open menu as you type; `CompletionMenu` keeps a lone suggestion from being inserted.
             .with_quick_completions(true)
             .with_partial_completions(false)
-            .with_status_line(Box::new(SignatureLine::new(backend)))
+            .with_status_line(Box::new(SignatureLine::new(backend, self.generation.clone())))
             .with_edit_mode(Box::new(AutoCompleteMode::new(Emacs::new(keybindings), tab_pressed, popup)))
             .use_bracketed_paste(true)
             // Lets terminals that support it report Shift-Enter (bound by reedline
@@ -574,6 +585,7 @@ impl Repl {
         let wake = self.wake.clone();
         let dap_comm = self.dap_comm.clone();
         let plots = self.plots.clone();
+        let generation = self.generation.clone();
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_millis(50));
@@ -585,6 +597,11 @@ impl Repl {
                 while let Ok(Some((_, msg))) = client.poll(&[Channel::Iopub], Duration::ZERO) {
                     if plots.hosted() && !matches!(plots.handle(&msg), PlotEvent::None) {
                         continue;
+                    }
+                    // Right away, not when the main loop next runs: completion
+                    // at the prompt being typed must see it.
+                    if finishes_request(&msg) {
+                        generation.advance();
                     }
                     if needs_main_loop(&msg, dap_comm.as_deref()) {
                         wake.store(true, Ordering::SeqCst);
@@ -871,6 +888,7 @@ impl Repl {
                 _ => {},
             }
         }
+        self.generation.advance();
         // The prompt R stopped at (from the UI comm) settles any held debugger lines.
         self.release_debug(self.prompt.is_browser());
         let error = reply.is_some_and(|r| r["status"] != "ok");
@@ -878,6 +896,9 @@ impl Repl {
     }
 
     fn handle_iopub(&mut self, msg: &Message) {
+        if finishes_request(msg) {
+            self.generation.advance();
+        }
         match self.plots.handle(msg) {
             PlotEvent::None => {},
             PlotEvent::Handled => return,

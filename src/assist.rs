@@ -20,6 +20,22 @@ use crate::lsp::{kind_label, CompletionBackend};
 
 pub const COMPLETION_MENU: &str = "completion_menu";
 
+/// Counts the times R may have changed what is defined: each run of code, and
+/// each request the kernel finishes for any client. Completions, signatures
+/// and help are reused only while it stays the same.
+#[derive(Clone, Default)]
+pub struct Generation(Arc<AtomicU64>);
+
+impl Generation {
+    pub fn advance(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn current(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 /// How long a signature lookup may hold up redrawing the prompt.
 const SIGNATURE_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -241,6 +257,20 @@ pub struct Docs {
     pub items: Vec<Value>,
     /// The help for each item fetched so far, by [`doc_key`].
     pub help: HashMap<String, Help>,
+    /// The [`Generation`] `help` was fetched in.
+    pub generation: u64,
+}
+
+impl Docs {
+    /// Records the items behind new suggestions, dropping help fetched before
+    /// R last changed what's defined: a redefined function has a new signature.
+    pub fn set_items(&mut self, items: Vec<Value>, generation: u64) {
+        if self.generation != generation {
+            self.help.clear();
+            self.generation = generation;
+        }
+        self.items = items;
+    }
 }
 
 pub type SharedDocs = Arc<Mutex<Docs>>;
@@ -583,13 +613,14 @@ impl<M: Menu> Menu for CompletionMenu<M> {
 /// current argument highlighted: `mean(x, trim = 0, na.rm = FALSE, ...)`.
 pub struct SignatureLine {
     backend: CompletionBackend,
+    generation: Generation,
     /// What the last lookup was for, and ark's answer.
     cache: Option<(String, Option<Value>)>,
 }
 
 impl SignatureLine {
-    pub fn new(backend: CompletionBackend) -> Self {
-        Self { backend, cache: None }
+    pub fn new(backend: CompletionBackend, generation: Generation) -> Self {
+        Self { backend, generation, cache: None }
     }
 }
 
@@ -598,8 +629,15 @@ impl StatusLine for SignatureLine {
         let Some(call) = code_context(line, pos).call else {
             return String::new();
         };
-        // Ark's answer only changes with the call or the argument the cursor is in.
-        let key = format!("{}\u{0}{}\u{0}{:?}", &line[..=call.open], call.arg_index, call.arg_name);
+        // Ark's answer only changes with the call, the argument the cursor is
+        // in, or code that ran since (it may have redefined the function).
+        let key = format!(
+            "{}\u{0}{}\u{0}{:?}\u{0}{}",
+            &line[..=call.open],
+            call.arg_index,
+            call.arg_name,
+            self.generation.current()
+        );
         if self.cache.as_ref().is_none_or(|(k, _)| *k != key) {
             // ark only finds a call that's closed, as it always is in an editor
             // that pairs brackets; at the prompt it's usually still open.
@@ -675,6 +713,19 @@ fn parameter_range(label: &str, parameter: &Value) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn help_is_dropped_once_code_has_run() {
+        let item = json!({ "label": "f" });
+        let mut docs = Docs::default();
+        docs.set_items(vec![item.clone()], 0);
+        docs.help.insert(doc_key(&item), Help::note("f(a)"));
+        docs.set_items(vec![item.clone()], 0);
+        assert!(docs.help.contains_key(&doc_key(&item)), "same generation keeps help");
+        docs.set_items(vec![item.clone()], 1);
+        assert!(docs.help.is_empty(), "a new generation drops it");
+        assert_eq!(docs.items, vec![item]);
+    }
 
     #[test]
     fn finds_the_call_and_argument_around_the_cursor() {

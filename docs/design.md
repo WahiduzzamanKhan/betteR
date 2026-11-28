@@ -69,7 +69,7 @@ Reedline has no option for completing as you type, so the console assembles it:
   - the arguments, names in bold.
 
   It's word-wrapped by display width and ends in "…" when it doesn't fit. A function without a help page (one defined in the session, or an S3 method listed under its generic) gets its signature from signature help instead. Until help arrives, or for things without any, the box says what the suggestion is (`function`, `column`). Fetching blocks drawing: about 0.1 s per item standalone, longer the first time.
-- **Speed.** Ark's answer for a word is cached and narrowed locally as the word grows, unless ark marks it incomplete. So typing a name asks once, not once per letter. Completion as you type gives up after 800 ms rather than stall typing.
+- **Speed.** Ark's answer for a word is cached and narrowed locally as the word grows, unless ark marks it incomplete. So typing a name asks once, not once per letter. Code that runs (from any client, or a request such as the IDE's Clear) drops this cache, and the cached signatures and help, so a name defined or redefined since shows up at once. Completion as you type gives up after 800 ms rather than stall typing.
 - **Signatures.** Ark only finds a call that's closed, as it always is in an editor that pairs brackets. So the status line asks about the input with its open brackets (and any open string) closed at the end. It asks again only when the call or the argument changes, and gives up after 500 ms. Hosted, completion, help and signature requests go through the extension's LSP client (`complete`, `resolve` and `signature` on the IDE channel).
 
 ## Settings

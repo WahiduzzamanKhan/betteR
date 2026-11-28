@@ -396,6 +396,36 @@ check("signature shown under the input", "print_me_please(a, b = 2)" in out, out
 check("current argument highlighted", "\x1b[1mb = 2" in t.raw, t.raw[-300:])
 t.clear_line()
 
+# Completion, signatures and help are asked again after code runs: a lookup
+# made before a command mustn't hide what the command defined. Typing the
+# command itself (`fresh_two <- 2`) narrows the earlier answer for `fresh_`.
+t.run("fresh_one <- 1")
+t.run("sig_fn <- function(a) a")
+for keys in ("sig_fn(", "sig_f", "fresh_"):
+    t.send(keys)
+    t.idle(1.5)
+    t.clear_line()
+t.run("sig_fn <- function(a, second_arg) a")
+t.run("fresh_two <- 2")
+t.raw = ""
+t.send("fresh_")
+t.idle(1.5)
+out = ANSI.sub("", t.raw)
+check("completion offers a name defined since the last lookup", "fresh_two" in out, out)
+t.clear_line()
+t.raw = ""
+t.send("sig_fn(")
+t.idle(1.5)
+out = ANSI.sub("", t.raw)
+check("signature follows a redefined function", "sig_fn(a, second_arg)" in out, out)
+t.clear_line()
+t.raw = ""
+t.send("sig_f")
+t.idle(1.5)
+out = ANSI.sub("", t.raw)
+check("suggestion help follows a redefined function", "sig_fn(a, second_arg)" in out, out)
+t.clear_line()
+
 # Ctrl-R: typed letters go to the search term, Enter takes the match.
 t.raw = ""
 t.send("\x12")
