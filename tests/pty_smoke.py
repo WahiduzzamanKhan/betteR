@@ -451,8 +451,26 @@ ok, out = t.run("c")
 check("browser() continue returns to top level", ok and "[1] 10" in out, out)
 
 ok, out = t.run("?mean")
+# The console doesn't wait for the browser, so the record may land a moment later.
+deadline = time.time() + 5
+while time.time() < deadline and "/library/base/html/mean.html" not in (open(OPENED).read() if os.path.exists(OPENED) else ""):
+    time.sleep(0.1)
 opened = open(OPENED).read() if os.path.exists(OPENED) else ""
 check("?mean opens the R help page in the browser", ok and "/library/base/html/mean.html" in opened, opened)
+
+# A browser that stays open (Firefox started from here, w3m) must not block the console.
+if not WINDOWS:
+    slow = os.path.join(os.path.dirname(OPENED), "slow_browser")
+    with open(slow, "w") as f:
+        f.write(f'#!/bin/sh\necho "$1" >> {OPENED}.slow\nsleep 30\n')
+    os.chmod(slow, 0o755)
+    ts = Term(env={"BROWSER": slow})
+    ts.expect("Ctrl-D quits", timeout=60)
+    ts.idle(0.5)
+    ok, out = ts.run("?mean", timeout=10)
+    ok2, out2 = ts.run("1 + 1", timeout=5)
+    check("a browser that stays open doesn't block the console", ok and ok2 and "[1] 2" in out2, out + out2)
+    ts.quit()
 
 ok, out = t.run("plot(1:3)")
 check("plot drawn inline (iTerm2 image protocol)", ok and "\x1b]1337;File=inline=1" in t.raw, out[-200:])

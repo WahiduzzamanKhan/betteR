@@ -759,10 +759,10 @@ impl Repl {
     /// Standalone: interactive output (htmlwidgets, Shiny, help, files) goes to
     /// `$BROWSER`, or the system's default opener.
     fn open_externally(&mut self, target: &str, title: &str) {
-        let ok = match std::env::var("BROWSER").ok().filter(|b| !b.is_empty()) {
-            Some(browser) => run_quietly(&browser, target),
-            None => open_with_system(target),
-        };
+        let from_browser = std::env::var("BROWSER")
+            .ok()
+            .is_some_and(|b| browser_commands(&b, target).into_iter().any(|(program, args)| launch(&program, &args)));
+        let ok = from_browser || open_with_system(target);
         self.clear_prompt();
         self.finish_line();
         let note = if ok {
@@ -1192,20 +1192,50 @@ impl Repl {
     }
 }
 
-/// Runs `program target` without showing its output; true if it succeeded.
-fn run_quietly(program: &str, target: &str) -> bool {
-    std::process::Command::new(program)
-        .arg(target)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Starts `program args` without waiting for it: a browser that isn't running
+/// yet stays in the foreground until its window closes, and must neither block
+/// the console nor read its keyboard. True if it started; a thread reaps it.
+fn launch(program: &str, args: &[String]) -> bool {
+    use std::process::{Command, Stdio};
+    match Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        },
+        Err(_) => false,
+    }
+}
+
+/// The separator of `$BROWSER` entries. Not on Windows, where paths contain `:`.
+#[cfg(not(windows))]
+const BROWSER_SEPARATOR: char = ':';
+#[cfg(windows)]
+const BROWSER_SEPARATOR: char = ';';
+
+/// The programs and arguments to try for `$BROWSER`, in order. It is a list of
+/// entries; an entry containing `%s` is a command line with `%s` replaced by
+/// the target, otherwise it is a program that takes the target as its argument.
+fn browser_commands(browser: &str, target: &str) -> Vec<(String, Vec<String>)> {
+    browser
+        .split(BROWSER_SEPARATOR)
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            if !entry.contains("%s") {
+                return Some((entry.to_string(), vec![target.to_string()]));
+            }
+            let mut words = entry.split_whitespace().map(|w| w.replace("%s", target));
+            words.next().map(|program| (program, words.collect()))
+        })
+        .collect()
 }
 
 /// Opens a URL or file with the system's default handler.
 #[cfg(not(windows))]
 fn open_with_system(target: &str) -> bool {
-    run_quietly(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }, target)
+    launch(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }, &[target.to_string()])
 }
 
 /// Opens a URL or file with the system's default handler. Not `cmd /C start`:
@@ -1373,6 +1403,21 @@ mod tests {
     use super::{
         chunk_location, debug_lines_start, is_browser_prompt, short_debug_location, shown_debug_lines, split_top_level,
     };
+
+    #[cfg(not(windows))]
+    #[test]
+    fn browser_variable_entries() {
+        use super::browser_commands;
+        let url = "http://x/?a=1&b=2";
+        let one = |p: &str, a: &[&str]| (p.to_string(), a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(browser_commands("firefox", url), vec![one("firefox", &[url])]);
+        assert_eq!(
+            browser_commands("w3m:: firefox %s --new-tab :", url),
+            vec![one("w3m", &[url]), one("firefox", &[url, "--new-tab"])]
+        );
+        assert_eq!(browser_commands("open -a Safari %s", url), vec![one("open", &["-a", "Safari", url])]);
+        assert!(browser_commands("", url).is_empty());
+    }
 
     fn texts(code: &str) -> Vec<String> {
         split_top_level(code).into_iter().map(|c| c.text).collect()

@@ -275,7 +275,7 @@ better < analysis.R
 | Variable | Effect |
 |---|---|
 | `BETTER_HISTORY` | History file (default: `~/Library/Application Support/better/history.txt` on macOS, `~/.local/share/better/history.txt` on Linux, `%APPDATA%\better\history.txt` on Windows) |
-| `BROWSER` | Program used to open help pages, htmlwidgets and apps |
+| `BROWSER` | Program used to open help pages, htmlwidgets and apps. A `:`-separated list is tried in order, `%s` stands for the URL, and the browser is started in the background |
 | `BETTER_STANDARD_DLL_SEARCH` | Windows only: `1` loads R's libraries with the standard DLL search order (which includes `PATH`), as conda's R needs |
 | `R_HOME` | Which R installation to use (default: the `R` on your `PATH`). Overrides `startup.r_home` in `config.toml` |
 | `BETTER_CONFIG` | The config file to read (see [Settings](#settings)) |
